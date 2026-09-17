@@ -25,3 +25,13 @@ installer/output/
 
 # 归档/备份文件
 _archive/
+
+# Electron（依赖与构建产物不入库，安装包走 Releases）
+electron/node_modules/
+electron/dist/
+
+# 开发临时素材
+icon_candidates/
+output_skins/
+*.log
+electron/_mirror/

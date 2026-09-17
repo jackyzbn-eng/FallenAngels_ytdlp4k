@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="ui/themes.css">
+<link rel="stylesheet" href="ui/style.css">
+<title>Fallen Angels</title>
+</head>
+<body class="theme-dark-linear">
+<div class="app">
+  <!-- 侧边栏 -->
+  <aside class="sidebar">
+    <div class="brand">Fallen Angels</div>
+    <div class="brand-version" id="app-version"></div>
+    <div class="nav-item active" data-page="yt"><span class="dot"></span>油管下载</div>
+    <div class="nav-item" data-page="social"><span class="dot"></span>社媒视频下载</div>
+    <div class="nav-item" data-page="image"><span class="dot"></span>图片压缩</div>
+    <div class="nav-item" data-page="video"><span class="dot"></span>视频处理</div>
+    <div class="nav-item" data-page="env"><span class="dot"></span>环境检测</div>
+    <div class="nav-item" data-page="settings"><span class="dot"></span>设置</div>
+  </aside>
+
+  <!-- 主内容 -->
+  <main class="main">
+    <!-- ========== 油管下载页 ========== -->
+    <section class="page dl-page" id="page-yt">
+      <!-- 上半：可滚动的卡片区（队列变长时只滚这里） -->
+      <div class="page-scroll">
+      <div class="page-title">油管下载</div>
+      <div class="page-sub">粘贴 YouTube 链接，选好分类和画质，点「加入队列」（下载中也能继续添加）</div>
+
+      <div class="card">
+        <div class="card-title">保存目录 <span class="pill add-dir" data-src="yt">＋ 添加分类</span></div>
+        <div class="card-sub">分类名可直接改；每个分类点「浏览」选一个下载文件夹</div>
+        <!-- data-src 标明这份列表属于哪个页面（油管与社媒各有自己的分类） -->
+        <div class="dir-list" data-src="yt"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">画质</div>
+        <div class="card-sub">分辨率高于视频实际时自动降级；帧率优先下载原版流</div>
+        <div class="row">
+          <span class="row-label">分辨率</span>
+          <div id="quality-opts" class="row" style="margin-top:0;gap:18px"></div>
+        </div>
+        <div class="row">
+          <span class="row-label">帧率</span>
+          <div id="fps-opts" class="row" style="margin-top:0;gap:18px"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">视频链接 <span class="pill" id="btn-paste-list">从剪贴板粘贴</span></div>
+        <div class="card-sub" id="url-hint">支持批量：一行一个链接，也可用空格或逗号分隔；下载中也能随时再添加</div>
+        <textarea class="input textarea" id="url" rows="3"
+          placeholder="https://www.youtube.com/watch?v=…&#10;https://www.youtube.com/watch?v=…"></textarea>
+      </div>
+
+      </div><!-- /.page-scroll -->
+
+      <!-- 本页专属底栏：队列 + 进度条 + 按钮行 + 日志，与社媒页完全分开 -->
+      <div class="page-bottom">
+      <div class="card" id="task-card-yt" hidden>
+        <div class="card-title">
+          油管队列
+          <span class="pill ghost-pill" id="btn-clear-finished-yt">清除已完成</span>
+          <span class="pill danger-pill" id="btn-stop-all-yt">停止全部</span>
+        </div>
+        <div id="task-list-yt"></div>
+      </div>
+
+      <div class="progress-wrap" id="progress-wrap-yt" hidden>
+        <div class="progress-bar">
+          <div class="progress-fill" id="progress-fill-yt"></div>
+        </div>
+        <div class="progress-info">
+          <span id="progress-percent-yt">0%</span>
+          <span id="progress-detail-yt"></span>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btn" id="btn-download-yt">加入队列</button>
+        <button class="btn ghost" id="btn-copy-log-yt">复制日志</button>
+        <button class="btn ghost" id="btn-clear-log-yt">清空日志</button>
+        <span class="status" id="download-status-yt">就绪</span>
+      </div>
+
+      <div class="log" id="log-yt"></div>
+      </div><!-- /.page-bottom -->
+    </section>
+
+    <!-- ========== 社媒视频下载页 ========== -->
+    <section class="page dl-page" id="page-social" style="display:none">
+      <div class="page-scroll">
+      <div class="page-title">社媒视频下载</div>
+      <div class="page-sub">粘贴抖音 / 小红书 / B站 / 微博 / TikTok 的分享链接，点「加入队列」</div>
+
+      <div class="card">
+        <div class="card-title">支持范围</div>
+        <div class="card-sub">
+          与油管下载用的是同一个内核（yt-dlp）。当前可直接下载：抖音、小红书、B站、微博、TikTok。
+        </div>
+        <div class="card-sub" style="margin-top:8px">
+          快手暂不支持 —— yt-dlp 没有该站的解析器，贴进去会失败。
+        </div>
+        <div class="card-sub" style="margin-top:8px">
+          抖音大多需要登录态才能解析（否则报 Fresh cookies needed）：先在「设置 → 浏览器 Cookies」选好浏览器，
+          并确认该浏览器里登录过对应站点。画质固定取平台最高（原画），不做二次转码。
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">保存目录 <span class="pill add-dir" data-src="social">＋ 添加分类</span></div>
+        <div class="card-sub">社媒专用分类，与油管页各存各的、互不影响</div>
+        <div class="dir-list" data-src="social"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">视频链接 <span class="pill" id="social-btn-paste">从剪贴板粘贴</span></div>
+        <div class="card-sub" id="social-url-hint">支持批量：一行一个链接，也可用空格或逗号分隔；分享短链（如 v.douyin.com/…）直接贴即可</div>
+        <textarea class="input textarea" id="social-url" rows="3"
+          placeholder="https://v.douyin.com/…&#10;https://www.xiaohongshu.com/explore/…"></textarea>
+      </div>
+      </div><!-- /.page-scroll -->
+
+      <!-- 本页专属底栏：与油管页完全分开，互不干扰 -->
+      <div class="page-bottom">
+      <div class="card" id="task-card-social" hidden>
+        <div class="card-title">
+          社媒队列
+          <span class="pill ghost-pill" id="btn-clear-finished-social">清除已完成</span>
+          <span class="pill danger-pill" id="btn-stop-all-social">停止全部</span>
+        </div>
+        <div id="task-list-social"></div>
+      </div>
+
+      <div class="progress-wrap" id="progress-wrap-social" hidden>
+        <div class="progress-bar">
+          <div class="progress-fill" id="progress-fill-social"></div>
+        </div>
+        <div class="progress-info">
+          <span id="progress-percent-social">0%</span>
+          <span id="progress-detail-social"></span>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btn" id="btn-download-social">加入队列</button>
+        <button class="btn ghost" id="btn-copy-log-social">复制日志</button>
+        <button class="btn ghost" id="btn-clear-log-social">清空日志</button>
+        <span class="status" id="download-status-social">就绪</span>
+      </div>
+
+      <div class="log" id="log-social"></div>
+      </div><!-- /.page-bottom -->
+    </section>
+
+    <!-- ========== 图片压缩页 ========== -->
+    <section class="page dl-page" id="page-image" style="display:none">
+      <div class="page-scroll">
+      <div class="page-title">图片压缩</div>
+      <div class="page-sub">把图片拖进窗口，或点下面的按钮选文件 / 选文件夹，批量压小体积</div>
+
+      <div class="card">
+        <div class="card-title">
+          选择图片
+          <span class="pill" id="img-pick-files">选择图片</span>
+        </div>
+        <div class="card-sub">
+          也可以直接把图片或文件夹拖进窗口。选文件夹会把里面的图片都收进来（含子文件夹）。
+        </div>
+        <div class="row">
+          <button class="btn ghost" id="img-pick-dir">选择文件夹</button>
+          <button class="btn ghost" id="img-clear">清空列表</button>
+          <span class="row-label" id="img-count" style="width:auto">尚未选择图片</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">压缩设置</div>
+        <div class="row">
+          <span class="row-label" style="width:auto;min-width:56px">质量</span>
+          <div id="img-quality-opts" class="row" style="margin-top:0;gap:16px"></div>
+        </div>
+        <div class="card-sub" id="img-quality-hint"></div>
+        <div class="row">
+          <span class="row-label" style="width:auto;min-width:56px">输出格式</span>
+          <div id="img-format-opts" class="row" style="margin-top:0;gap:16px"></div>
+        </div>
+        <div class="row">
+          <span class="row-label" style="width:auto;min-width:56px">最长边</span>
+          <div id="img-edge-opts" class="row" style="margin-top:0;gap:16px"></div>
+        </div>
+        <div class="row">
+          <span class="row-label" style="width:auto;min-width:56px">输出到</span>
+          <div id="img-out-opts" class="row" style="margin-top:0;gap:16px"></div>
+        </div>
+        <div class="row" id="img-outdir-row" hidden>
+          <input class="input grow readonly" id="img-outdir" readonly placeholder="未选择输出文件夹">
+          <button class="btn ghost" id="img-pick-outdir">浏览</button>
+        </div>
+      </div>
+
+      <!-- 结果（跑过一次才显示） -->
+      <div class="card" id="img-result-card" hidden>
+        <div class="card-title">
+          压缩结果
+          <span class="pill ghost-pill" id="img-clear-result">清空结果</span>
+        </div>
+        <div class="queue-summary" id="img-summary"></div>
+        <div id="img-result-list"></div>
+      </div>
+      </div><!-- /.page-scroll -->
+
+      <div class="page-bottom">
+      <div class="progress-wrap" id="img-progress-wrap" hidden>
+        <div class="progress-bar">
+          <div class="progress-fill" id="img-progress-fill"></div>
+        </div>
+        <div class="progress-info">
+          <span id="img-progress-percent">0%</span>
+          <span id="img-progress-detail"></span>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btn" id="img-start">开始压缩</button>
+        <button class="btn ghost" id="img-stop" disabled>停止</button>
+        <button class="btn ghost" id="img-open-out" disabled>打开输出目录</button>
+        <span class="status" id="img-status">就绪</span>
+      </div>
+
+      <div class="log" id="log-img"></div>
+      </div><!-- /.page-bottom -->
+    </section>
+
+    <!-- ========== 视频处理页 ========== -->
+    <section class="page dl-page" id="page-video" style="display:none">
+      <div class="page-scroll">
+      <div class="page-title">视频处理</div>
+      <div class="page-sub">无损修剪（不重新编码）与压缩（画质基本不变），用的都是内置 ffmpeg</div>
+
+      <div class="card">
+        <div class="card-title">
+          选择视频
+          <span class="pill" id="vid-pick-files">添加视频</span>
+        </div>
+        <div class="card-sub">也可以直接把视频或文件夹拖进窗口（文件夹会连子目录一起收）</div>
+        <div class="row">
+          <button class="btn ghost" id="vid-pick-dir">选择文件夹</button>
+          <button class="btn ghost" id="vid-clear">清空列表</button>
+          <span class="row-label" id="vid-count" style="width:auto">尚未选择视频</span>
+        </div>
+        <div class="card-sub" id="vid-info" style="margin-top:8px"></div>
+      </div>
+
+      <!-- 模式选择放在标题行右侧：它只有两个选项，单占一行会把预览挤到屏幕外 -->
+      <div class="card">
+        <div class="card-title">
+          要做什么
+          <div id="vid-mode-opts" class="row" style="margin-top:0;gap:18px"></div>
+        </div>
+        <div class="card-sub" id="vid-mode-hint"></div>
+      </div>
+
+      <!-- 预览 + 修剪合成一张卡，并且左右分栏：
+           视频在左、所有控制项在右。竖屏素材（1080×1920）上下叠放时会把播放条和
+           关键帧轨道顶出屏幕，用户得来回滚；左右分栏后一屏内就能走完
+           "看画面 → 拖进度 → 定起止 → 微调"。 -->
+      <div class="card" id="vid-trim-card">
+        <div class="card-title">预览与修剪</div>
+
+        <div class="pv-split">
+          <video id="vid-pv" class="pv-video" preload="metadata" playsinline></video>
+
+          <div class="pv-panel">
+            <div class="pv-bar">
+              <button class="btn ghost" id="vid-pv-play">▶ 播放</button>
+              <input type="range" class="pv-range" id="vid-pv-range" min="0" max="1000" step="1" value="0">
+              <span class="pv-time" id="vid-pv-time">0:00:00.000 / 0:00:00.000</span>
+            </div>
+            <div class="row">
+              <button class="btn ghost" id="vid-pv-to-start">⏮ 跳到起点</button>
+              <button class="btn ghost" id="vid-pv-to-end">跳到终点 ⏭</button>
+              <button class="btn" id="vid-pv-set-start">设为起点</button>
+              <button class="btn" id="vid-pv-set-end">设为终点</button>
+              <!-- 应用内放不出来时才出现：把文件丢给系统默认播放器 -->
+              <button class="btn ghost" id="vid-pv-external" hidden>用系统播放器打开</button>
+            </div>
+
+            <div class="row">
+              <span class="row-label" style="width:auto;min-width:44px">从</span>
+              <input class="input" id="vid-start" style="width:124px" value="0:00:00.000" placeholder="0:00:00.000">
+              <span class="row-label" style="width:auto">到</span>
+              <input class="input" id="vid-end" style="width:124px" value="" placeholder="留空 = 到片尾">
+            </div>
+
+            <!-- 关键帧轨道：把整片的关键帧画出来，直接点着挑切点，
+                 不用再靠"间隔 2.5 秒"自己心算倍数。绿线是预览的播放位置。 -->
+            <div class="row" id="vid-kf-row" hidden>
+              <div class="kf-rail" id="vid-kf-rail" title="单击设起点 · Shift+单击或右键设终点">
+                <div class="kf-ticks" id="vid-kf-ticks"></div>
+                <div class="kf-sel" id="vid-kf-sel"></div>
+                <div class="kf-cursor kf-cursor-start" id="vid-kf-cur-start"></div>
+                <div class="kf-cursor kf-cursor-end" id="vid-kf-cur-end"></div>
+                <div class="kf-head" id="vid-kf-head" hidden></div>
+              </div>
+            </div>
+            <div class="row" id="vid-kf-nav-row" hidden>
+              <button class="btn ghost" id="vid-kf-prev">◀ 上一关键帧</button>
+              <button class="btn ghost" id="vid-kf-next">下一关键帧 ▶</button>
+              <span class="row-label" style="width:auto" id="vid-kf-pos"></span>
+            </div>
+
+            <div class="row">
+              <button class="btn ghost" id="vid-cut-head">剪掉开头 3 秒</button>
+              <button class="btn ghost" id="vid-cut-tail">剪掉结尾 3 秒</button>
+              <button class="btn ghost" id="vid-full">恢复全长</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card-sub" id="vid-pv-hint"></div>
+        <div class="card-sub" id="vid-kf-hint" hidden></div>
+        <div class="card-sub" id="vid-trim-hint"></div>
+        <div class="card-sub">
+          无损 = 不重新编码，画质 100% 不变，几秒就能跑完，也不会有任何一次画质损失。
+          代价是切点必须落在轨道里的「关键帧」刻度上，所以起点会自动对齐到最近的关键帧（误差最小）。
+        </div>
+      </div>
+
+      <!-- 压缩参数 -->
+      <div class="card" id="vid-compress-card" hidden>
+        <div class="card-title">压缩设置</div>
+        <div class="row">
+          <span class="row-label" style="width:auto;min-width:56px">质量</span>
+          <div id="vid-quality-opts" class="row" style="margin-top:0;gap:16px"></div>
+        </div>
+        <div class="card-sub" id="vid-quality-hint"></div>
+        <div class="row">
+          <span class="row-label" style="width:auto;min-width:56px">编码器</span>
+          <div id="vid-encoder-opts" class="row" style="margin-top:0;gap:16px"></div>
+        </div>
+        <div class="row">
+          <span class="row-label" style="width:auto;min-width:56px">分辨率</span>
+          <div id="vid-height-opts" class="row" style="margin-top:0;gap:16px"></div>
+        </div>
+        <div class="row">
+          <span class="row-label" style="width:auto;min-width:56px">音频</span>
+          <div id="vid-audio-opts" class="row" style="margin-top:0;gap:16px"></div>
+        </div>
+        <div class="card-sub">
+          压缩必然要重新编码。想让体积明显变小又看不出差别，选「HEVC 软件」最划算（慢一些）；
+          「HEVC 硬件」快很多，但同等观感下体积会大一点。
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">输出到</div>
+        <div class="row">
+          <div id="vid-out-opts" class="row" style="margin-top:0;gap:16px"></div>
+        </div>
+        <div class="row" id="vid-outdir-row" hidden>
+          <input class="input grow readonly" id="vid-outdir" readonly placeholder="未选择输出文件夹">
+          <button class="btn ghost" id="vid-pick-outdir">浏览</button>
+        </div>
+        <div class="card-sub">输出文件名会自动加后缀（_trim / _compressed），同名时加序号，绝不覆盖原文件。</div>
+      </div>
+
+      <div class="card" id="vid-result-card" hidden>
+        <div class="card-title">
+          处理结果
+          <span class="pill ghost-pill" id="vid-clear-result">清空结果</span>
+        </div>
+        <div class="queue-summary" id="vid-summary"></div>
+        <div id="vid-result-list"></div>
+      </div>
+      </div><!-- /.page-scroll -->
+
+      <div class="page-bottom">
+      <div class="progress-wrap" id="vid-progress-wrap" hidden>
+        <div class="progress-bar">
+          <div class="progress-fill" id="vid-progress-fill"></div>
+        </div>
+        <div class="progress-info">
+          <span id="vid-progress-percent">0%</span>
+          <span id="vid-progress-detail"></span>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btn" id="vid-btn-start">开始处理</button>
+        <button class="btn ghost" id="vid-stop" disabled>停止</button>
+        <button class="btn ghost" id="vid-open-out" disabled>打开输出目录</button>
+        <span class="status" id="vid-status">就绪</span>
+      </div>
+
+      <div class="log" id="log-video"></div>
+      </div><!-- /.page-bottom -->
+    </section>
+
+    <!-- ========== 环境检测页 ========== -->
+    <section class="page" id="page-env" style="display:none">
+      <div class="page-title">环境检测</div>
+      <div class="page-sub">运行所需组件均已内置于安装目录，正常情况无需手动安装</div>
+
+      <div class="card">
+        <div class="card-title">组件状态</div>
+        <div id="comp-list"></div>
+      </div>
+
+      <!-- 视频能不能在应用里预览，取决于显卡与系统解码组件，跟下载/修剪能不能用无关，
+           所以单独一张卡说清楚，免得用户以为"放不出来 = 软件坏了" -->
+      <div class="card">
+        <div class="card-title">视频播放能力</div>
+        <div id="playback-list"></div>
+      </div>
+
+      <div class="actions">
+        <button class="btn" id="btn-install">一键安装缺失组件</button>
+        <button class="btn ghost" id="btn-refresh">重新检测</button>
+      </div>
+      <div class="page-sub" id="env-hint" style="margin-top:14px"></div>
+    </section>
+
+    <!-- ========== 设置页 ========== -->
+    <section class="page" id="page-settings" style="display:none">
+      <div class="page-title">设置</div>
+      <div class="page-sub">外观与行为偏好，即时生效并自动保存</div>
+
+      <div class="card">
+        <div class="card-title">主题皮肤</div>
+        <div class="card-sub">切换整套配色与质感，随皮肤一起记住你的选择</div>
+        <div class="skin-grid" id="skin-grid"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">网络代理</div>
+        <div class="card-sub">下载时如何连接网络，即时生效并自动保存</div>
+        <div class="row">
+          <div id="proxy-opts" class="row" style="margin-top:0;gap:16px"></div>
+        </div>
+        <div class="row" id="proxy-addr-row">
+          <span class="row-label" style="width:auto;white-space:nowrap">代理地址</span>
+          <input class="input" id="proxy-addr" style="width:180px" placeholder="127.0.0.1:7897">
+          <span class="row-label" id="proxy-hint" style="width:auto"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">浏览器 Cookies</div>
+        <div class="card-sub">年龄限制、会员限定视频需要登录态才能下载，从浏览器读取已登录的凭证</div>
+        <div class="row">
+          <div id="cookies-opts" class="row" style="margin-top:0;gap:18px"></div>
+        </div>
+        <div class="card-sub" id="cookies-hint" style="margin-top:10px"></div>
+        <div class="row" id="cookies-file-row" hidden>
+          <button class="btn ghost" id="btn-import-cookies">导入 cookies.txt</button>
+          <button class="btn ghost" id="btn-clear-cookies">清除</button>
+          <span class="row-label" id="cookies-file-hint" style="width:auto"></span>
+        </div>
+        <div class="card-sub" id="cookies-guide" style="margin-top:10px" hidden></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script src="ui/app.js"></script>
+
+<!-- 文件属性弹窗（用内置 ffprobe 读取） -->
+<div class="modal-mask" id="attr-modal" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <span class="modal-title">文件属性</span>
+      <button class="modal-close" id="attr-close" title="关闭">✕</button>
+    </div>
+    <div class="modal-body" id="attr-body"></div>
+  </div>
+</div>
+</body>
+</html>

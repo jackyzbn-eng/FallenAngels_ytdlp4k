@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+/* ytdlp4k 主题皮肤 —— 4 套，全部走 CSS 变量（学自 Cindy token 体系） */
+/* 用法：给 body 加 class theme-xxx，变量即切换（不能用 html data-theme，会干扰 pywebview api 注入） */
+
+/* ============================================================
+   皮肤一：light-cindy —— 浅色极简（近白 + pill + 零阴影）
+   ============================================================ */
+body.theme-light-cindy {
+  --bg-app: #f8f8f6;
+  --bg-sidebar: #f8f8f6;
+  --bg-card: #ffffff;
+  --bg-input: #f5f5f3;
+  --bg-chip: #111111;
+  --bg-hover: #efefec;
+
+  --text-primary: #111111;
+  --text-secondary: #737373;
+  --text-tertiary: #a3a3a3;
+  --text-on-accent: #ffffff;
+
+  --accent: #111111;
+  --accent-soft: #e5e5e2;
+  --success: #2e9e4f;
+  --warning: #ea6b17;
+  --danger: #d91f37;
+
+  --border: #e5e5e2;
+  --border-strong: #d7d7d4;
+
+  --radius-card: 14px;
+  --radius-input: 999px;      /* pill 语言 */
+  --radius-btn: 999px;
+
+  --shadow-card: none;
+  --shadow-btn: none;
+  --glow: none;
+  --app-gradient: none;
+}
+
+/* ============================================================
+   皮肤二：dark-linear —— 深色 Linear（近黑 + 紫蓝 + 反色按钮）【默认】
+   ============================================================ */
+body.theme-dark-linear {
+  --bg-app: #08090a;
+  --bg-sidebar: #0b0c0d;
+  --bg-card: #101114;
+  --bg-input: #15171a;
+  --bg-chip: #191a1d;
+  --bg-hover: #191a1d;
+
+  --text-primary: #e2e4e7;
+  --text-secondary: #62666d;
+  --text-tertiary: #3e4147;
+  --text-on-accent: #08090a;
+
+  --accent: #8fa4ff;
+  --accent-soft: #191a1d;
+  --success: #89d196;
+  --warning: #ffc47c;
+  --danger: #f34e52;
+
+  --border: #26282c;
+  --border-strong: #2e2e32;
+
+  --radius-card: 10px;
+  --radius-input: 8px;
+  --radius-btn: 8px;
+
+  --shadow-card: none;
+  --shadow-btn: none;
+  --glow: none;
+  --app-gradient: none;
+}
+
+/* ============================================================
+   皮肤三：light-motrix —— 浅色渐变科技（柔和渐变底 + 白卡浮起）
+   ============================================================ */
+body.theme-light-motrix {
+  --bg-app: #eef4ff;
+  --bg-sidebar: transparent;
+  --bg-card: #ffffff;
+  --bg-input: #f4f6fa;
+  --bg-chip: #eef4ff;
+  --bg-hover: #eef4ff;
+
+  --text-primary: #0f172a;
+  --text-secondary: #64748b;
+  --text-tertiary: #9aa5b5;
+  --text-on-accent: #ffffff;
+
+  --accent: #2f7cf6;
+  --accent-soft: #eef4ff;
+  --success: #12a150;
+  --warning: #d97706;
+  --danger: #dc2626;
+
+  --border: rgba(15, 23, 42, 0.06);
+  --border-strong: rgba(15, 23, 42, 0.1);
+
+  --radius-card: 16px;
+  --radius-input: 12px;
+  --radius-btn: 10px;
+
+  --shadow-card: 0 1px 2px rgba(15,23,42,.04), 0 12px 28px rgba(15,23,42,.08);
+  --shadow-btn: 0 2px 6px rgba(47,124,246,.35);
+  --glow: none;
+  --app-gradient: linear-gradient(135deg, #dfeaff 0%, #eef4ff 30%, #f8f9fc 60%, #eaf2ff 100%);
+}
+
+/* ============================================================
+   皮肤四：dark-neon —— 深色霓虹（深底 + 冷色发光）
+   ============================================================ */
+body.theme-dark-neon {
+  --bg-app: #0b0d12;
+  --bg-sidebar: #0f1218;
+  --bg-card: #161b23;
+  --bg-input: #0d1117;
+  --bg-chip: rgba(56, 189, 248, 0.1);
+  --bg-hover: rgba(56, 189, 248, 0.12);
+
+  --text-primary: #e6edf3;
+  --text-secondary: #7d8590;
+  --text-tertiary: #484f58;
+  --text-on-accent: #ffffff;
+
+  --accent: #38bdf8;
+  --accent-soft: rgba(56, 189, 248, 0.12);
+  --success: #3fb950;
+  --warning: #d29922;
+  --danger: #f85149;
+
+  --border: rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.14);
+
+  --radius-card: 12px;
+  --radius-input: 8px;
+  --radius-btn: 8px;
+
+  --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --shadow-btn: 0 0 18px rgba(56, 189, 248, 0.35);
+  --glow: 0 0 8px rgba(56, 189, 248, 0.6);
+  --app-gradient: radial-gradient(120% 80% at 85% -10%, rgba(56,189,248,.07), transparent 60%);
+}
+
+/* ytdlp4k 主样式 —— 全部颜色/圆角/阴影走 CSS 变量（见 themes.css） */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  font-family: "Microsoft YaHei UI", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  background: var(--bg-app);
+  background-image: var(--app-gradient);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+}
+
+.app {
+  display: flex;
+  height: 100vh;
+}
+
+/* ============ 侧边栏 ============ */
+.sidebar {
+  width: 150px;
+  flex: none;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
+  padding: 20px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.brand {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  padding: 0 10px 20px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: var(--radius-input);
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s ease-out, color 0.15s ease-out;
+}
+
+.nav-item .dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: transparent;
+  flex: none;
+}
+
+.nav-item:hover {
+  background: var(--bg-hover);
+}
+
+.nav-item.active {
+  background: var(--bg-chip);
+  color: var(--text-on-accent);
+  font-weight: 600;
+}
+
+.nav-item.active .dot {
+  background: var(--accent);
+  box-shadow: var(--glow);
+}
+
+/* ============ 主内容区 ============ */
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 24px 28px 20px;
+  overflow: hidden;
+}
+
+.page-title {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+}
+
+.page-sub {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+/* ============ 卡片 ============ */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 16px 18px;
+  margin-top: 16px;
+}
+
+.card-title {
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.card-sub {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+/* ============ 表单行 ============ */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.row-label {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  width: 46px;
+  flex: none;
+}
+
+/* ============ 单选钮 ============ */
+.radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.radio .dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border-strong);
+  background: transparent;
+  flex: none;
+  transition: border 0.15s ease-out, box-shadow 0.15s ease-out;
+}
+
+.radio.checked .dot {
+  border: 4px solid var(--accent);
+  box-shadow: var(--glow);
+}
+
+/* ============ 输入框 ============ */
+.input {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  color: var(--text-primary);
+  padding: 8px 14px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border 0.15s ease-out;
+}
+
+.input:focus {
+  border-color: var(--border-strong);
+}
+
+.input.readonly {
+  color: var(--text-secondary);
+}
+
+.input.grow { flex: 1; min-width: 0; }
+
+/* ============ 按钮 ============ */
+.btn {
+  border: none;
+  background: var(--bg-chip);
+  color: var(--text-on-accent);
+  padding: 8px 18px;
+  border-radius: var(--radius-btn);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  box-shadow: var(--shadow-btn);
+  transition: opacity 0.15s ease-out;
+}
+
+.btn:hover { opacity: 0.88; }
+.btn:disabled { opacity: 0.4; cursor: default; }
+
+.btn.ghost {
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  box-shadow: none;
+  font-weight: 400;
+}
+
+/* ============ 小徽标 ============ */
+.pill {
+  background: var(--bg-chip);
+  color: var(--text-on-accent);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+/* ============ 按钮行 ============ */
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.status {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* ============ 日志区 ============ */
+.log {
+  flex: 1;
+  margin-top: 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 14px 16px;
+  font-family: "Microsoft YaHei UI", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--text-secondary);
+  overflow-y: auto;
+  min-height: 120px;
+}
+
+.log .line { white-space: pre-wrap; word-break: break-all; }
+.log .ok { color: var(--success); }
+.log .dim { color: var(--text-tertiary); }
+.log .warn { color: var(--warning); }
+.log .err { color: var(--danger); }
+
+/* ============ 环境检测页 ============ */
+.comp-row {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+.comp-row:last-child { border-bottom: none; }
+
+.comp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.comp-name { font-size: 14px; font-weight: 600; }
+.comp-desc { font-size: 12px; color: var(--text-secondary); margin-top: 3px; }
+
+.comp-status { font-size: 12px; font-weight: 500; }
+.comp-status.ok { color: var(--success); }
+.comp-status.miss { color: var(--danger); }
+.comp-status.busy { color: var(--warning); }
+
+/* ============ 设置页 ============ */
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+.setting-row:last-child { border-bottom: none; }
+
+.setting-label { font-size: 14px; }
+.setting-desc { font-size: 12px; color: var(--text-secondary); margin-top: 3px; }
+
+/* 皮肤选择器 */
+.skin-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.skin-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border 0.15s ease-out;
+}
+
+.skin-card.selected { border: 2px solid var(--accent); }
+
+.skin-preview { height: 70px; display: flex; }
+.skin-preview .sp-side { width: 26%; }
+.skin-preview .sp-main { flex: 1; padding: 8px; }
+
+.skin-name {
+  padding: 8px 10px;
+  font-size: 12px;
+  text-align: center;
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+/* ============ 空状态插画 ============ */
+.empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  color: var(--text-tertiary);
+  padding: 40px;
+}
+
+.empty-state svg { opacity: 0.8; }
+.empty-state .empty-title { font-size: 15px; font-weight: 500; color: var(--text-secondary); }
+.empty-state .empty-sub { font-size: 12px; }
+
+</style>
+<title>ytdlp4k</title>
+</head>
+<body class="theme-dark-linear">
+<div class="app">
+  <!-- 侧边栏 -->
+  <aside class="sidebar">
+    <div class="brand">ytdlp4k</div>
+    <div class="nav-item active" data-page="download"><span class="dot"></span>下载</div>
+    <div class="nav-item" data-page="env"><span class="dot"></span>环境检测</div>
+    <div class="nav-item" data-page="settings"><span class="dot"></span>设置</div>
+  </aside>
+
+  <!-- 主内容 -->
+  <main class="main">
+    <!-- ========== 下载页 ========== -->
+    <section class="page" id="page-download">
+      <div class="page-title">下载</div>
+      <div class="page-sub">粘贴 YouTube 链接，选好分类和画质，点「开始下载」</div>
+
+      <div class="card">
+        <div class="card-title">保存目录 <span class="pill" id="add-dir">＋ 添加分类</span></div>
+        <div class="card-sub">分类名可直接改；每个分类点「浏览」选一个下载文件夹</div>
+        <div id="dir-list"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">画质</div>
+        <div class="card-sub">分辨率高于视频实际时自动降级；帧率优先下载原版流</div>
+        <div class="row">
+          <span class="row-label">分辨率</span>
+          <div id="quality-opts" class="row" style="margin-top:0;gap:18px"></div>
+        </div>
+        <div class="row">
+          <span class="row-label">帧率</span>
+          <div id="fps-opts" class="row" style="margin-top:0;gap:18px"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">视频链接</div>
+        <div class="row"><input class="input grow" id="url" placeholder="https://www.youtube.com/watch?v=…"></div>
+        <div class="row">
+          <span class="row-label" style="width:auto">网络代理</span>
+          <div id="proxy-opts" class="row" style="margin-top:0;gap:16px"></div>
+          <input class="input" id="proxy-addr" style="width:180px" placeholder="127.0.0.1:7897">
+          <span class="row-label" id="proxy-hint" style="width:auto"></span>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btn" id="btn-download">开始下载</button>
+        <button class="btn ghost" id="btn-play" disabled>播放</button>
+        <button class="btn ghost" id="btn-props" disabled>属性</button>
+        <button class="btn ghost" id="btn-clear-log">清空日志</button>
+        <span class="status" id="download-status">就绪</span>
+      </div>
+
+      <div class="log" id="log"></div>
+    </section>
+
+    <!-- ========== 环境检测页 ========== -->
+    <section class="page" id="page-env" style="display:none">
+      <div class="page-title">环境检测</div>
+      <div class="page-sub">运行需要三个组件，缺失的点「一键安装」自动补齐</div>
+
+      <div class="card">
+        <div class="card-title">组件状态</div>
+        <div id="comp-list"></div>
+      </div>
+
+      <div class="actions">
+        <button class="btn" id="btn-install">一键安装缺失组件</button>
+        <button class="btn ghost" id="btn-refresh">重新检测</button>
+      </div>
+      <div class="page-sub" id="env-hint" style="margin-top:14px"></div>
+    </section>
+
+    <!-- ========== 设置页 ========== -->
+    <section class="page" id="page-settings" style="display:none">
+      <div class="page-title">设置</div>
+      <div class="page-sub">外观与行为偏好，即时生效并自动保存</div>
+
+      <div class="card">
+        <div class="card-title">主题皮肤</div>
+        <div class="card-sub">切换整套配色与质感，随皮肤一起记住你的选择</div>
+        <div class="skin-grid" id="skin-grid"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+/* ytdlp4k 前端逻辑 —— 通过 window.pywebview.api 调用 Python 后端 */
+
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => document.querySelectorAll(s);
+
+/* ============ 皮肤 ============ */
+const SKINS = [
+  { id: "light-cindy",  name: "浅色极简",   colors: ["#f8f8f6", "#ffffff", "#111111"] },
+  { id: "dark-linear",  name: "深色 Linear", colors: ["#08090a", "#101114", "#8fa4ff"] },
+  { id: "light-motrix", name: "渐变科技",   colors: ["#dfeaff", "#ffffff", "#2f7cf6"] },
+  { id: "dark-neon",    name: "深色霓虹",   colors: ["#0b0d12", "#161b23", "#38bdf8"] },
+];
+
+let currentSkin = "dark-linear";
+
+function applySkin(id) {
+  currentSkin = id;
+  // 用 body class 切换主题（不能用 html data-theme，会干扰 pywebview api 注入）
+  document.body.className = "theme-" + id;
+  renderSkinGrid();
+  // 记忆选择
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.set_skin) {
+    try { window.pywebview.api.set_skin(id); } catch (e) {}
+  }
+}
+
+function renderSkinGrid() {
+  const grid = $("#skin-grid");
+  grid.innerHTML = "";
+  SKINS.forEach((s) => {
+    const card = document.createElement("div");
+    card.className = "skin-card" + (s.id === currentSkin ? " selected" : "");
+    card.innerHTML =
+      '<div class="skin-preview">' +
+        '<div class="sp-side" style="background:' + s.colors[0] + '"></div>' +
+        '<div class="sp-main" style="background:' + s.colors[0] + '">' +
+          '<div style="height:14px;border-radius:5px;background:' + s.colors[1] + ';margin-bottom:6px"></div>' +
+          '<div style="height:8px;border-radius:4px;background:' + s.colors[2] + ';width:60%"></div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="skin-name">' + s.name + '</div>';
+    card.onclick = () => applySkin(s.id);
+    grid.appendChild(card);
+  });
+}
+
+/* ============ 页面切换 ============ */
+function switchPage(name) {
+  $$(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.page === name));
+  $$(".page").forEach((p) => (p.style.display = "none"));
+  $("#page-" + name).style.display = "flex";
+  $("#page-download").style.display = name === "download" ? "flex" : "none";
+  if (name === "download") $("#page-download").style.display = "flex";
+  if (name === "env") $("#page-env").style.display = "flex";
+  if (name === "settings") $("#page-settings").style.display = "flex";
+}
+
+$$(".nav-item").forEach((n) => (n.onclick = () => switchPage(n.dataset.page)));
+
+/* ============ 事件绑定（移到函数内，延迟到 DOM 就绪后调用） ============ */
+function bindEvents() {
+  $$(".nav-item").forEach((n) => (n.onclick = () => switchPage(n.dataset.page)));
+  $("#add-dir").onclick = () => {
+    dirs.push({ name: "分类" + (dirs.length + 1), path: "" });
+    saveDirs(); renderDirs();
+  };
+  $("#btn-download").onclick = async () => {
+    const url = $("#url").value.trim();
+    if (!url) { alert("请粘贴视频链接"); return; }
+    const target = dirs[selectedDir];
+    if (!target || !target.path) { alert("请先为所选分类设置保存文件夹"); return; }
+    $("#btn-download").disabled = true;
+    $("#download-status").textContent = "下载中…";
+    await api("start_download", {
+      url, dir: target.path, quality, fps, proxyMode,
+      proxy: $("#proxy-addr").value.trim(),
+    });
+  };
+  $("#btn-clear-log").onclick = clearLog;
+}
+
+/* ============ 单选组渲染 ============ */
+function renderRadios(containerId, options, current, onSelect) {
+  const c = $("#" + containerId);
+  c.innerHTML = "";
+  options.forEach((opt) => {
+    const el = document.createElement("div");
+    el.className = "radio" + (opt.value === current ? " checked" : "");
+    el.innerHTML = '<span class="dot"></span><span>' + opt.label + "</span>";
+    el.onclick = () => {
+      $$("#" + containerId + " .radio").forEach((r) => r.classList.remove("checked"));
+      el.classList.add("checked");
+      onSelect(opt.value);
+    };
+    c.appendChild(el);
+  });
+}
+
+/* ============ 日志 ============ */
+function appendLog(text, cls) {
+  const log = $("#log");
+  const line = document.createElement("div");
+  line.className = "line" + (cls ? " " + cls : "");
+  line.textContent = text;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+}
+function clearLog() { $("#log").innerHTML = ""; }
+
+/* ============ 分类目录 ============ */
+let dirs = [];
+let selectedDir = 0;
+
+function renderDirs() {
+  const box = $("#dir-list");
+  box.innerHTML = "";
+  dirs.forEach((d, i) => {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML =
+      '<div class="radio' + (i === selectedDir ? " checked" : "") + '" style="flex:none">' +
+        '<span class="dot"></span></div>' +
+      '<input class="input" style="width:110px" value="' + (d.name || "") + '" data-i="' + i + '" data-f="name">' +
+      '<input class="input grow readonly" value="' + (d.path || "") + '" readonly placeholder="未选择文件夹">' +
+      '<button class="btn ghost" data-i="' + i + '" data-f="browse">浏览</button>' +
+      '<button class="btn ghost" data-i="' + i + '" data-f="del" style="padding:8px 10px">✕</button>';
+    box.appendChild(row);
+  });
+
+  // 单选
+  box.querySelectorAll(".radio").forEach((r, i) => {
+    r.onclick = () => { selectedDir = i; renderDirs(); };
+  });
+  // 名称编辑
+  box.querySelectorAll('input[data-f="name"]').forEach((inp) => {
+    inp.onchange = () => {
+      dirs[+inp.dataset.i].name = inp.value;
+      saveDirs();
+    };
+  });
+  // 浏览
+  box.querySelectorAll('button[data-f="browse"]').forEach((b) => {
+    b.onclick = async () => {
+      const i = +b.dataset.i;
+      const path = await api("pick_folder");
+      if (path) { dirs[i].path = path; saveDirs(); renderDirs(); }
+    };
+  });
+  // 删除
+  box.querySelectorAll('button[data-f="del"]').forEach((b) => {
+    b.onclick = () => {
+      dirs.splice(+b.dataset.i, 1);
+      if (selectedDir >= dirs.length) selectedDir = Math.max(0, dirs.length - 1);
+      saveDirs(); renderDirs();
+    };
+  });
+}
+
+function saveDirs() { api("save_dirs", dirs); }
+
+/* ============ 环境检测 ============ */
+function renderComponents(comps) {
+  const box = $("#comp-list");
+  box.innerHTML = "";
+  comps.forEach((c) => {
+    const row = document.createElement("div");
+    row.className = "comp-row";
+    row.innerHTML =
+      '<div class="comp-head">' +
+        '<span class="comp-name">' + c.name + "</span>" +
+        '<span class="comp-status ' + (c.ok ? "ok" : "miss") + '">' + c.status + "</span>" +
+      "</div>" +
+      '<div class="comp-desc">' + c.desc + "</div>";
+    box.appendChild(row);
+  });
+}
+
+/* ============ API 封装 ============ */
+function api(method, ...args) {
+  if (window.pywebview && window.pywebview.api && window.pywebview.api[method]) {
+    try {
+      return window.pywebview.api[method](...args);
+    } catch (e) {
+      return Promise.resolve(null);
+    }
+  }
+  return Promise.resolve(null);
+}
+
+/* ============ 下载 ============ */
+let quality = "4K";
+let fps = "0";
+let proxyMode = "system";
+
+/* ============ 初始化 ============ */
+async function init() {
+  bindEvents();
+  applySkin("dark-linear");
+  const cfg = await api("get_config");
+  if (cfg) {
+    if (cfg.skin) applySkin(cfg.skin);
+    dirs = cfg.dirs || [];
+    quality = cfg.quality || "4K";
+    fps = cfg.default_fps || "0";
+    proxyMode = cfg.proxy_mode || "system";
+    $("#proxy-addr").value = cfg.proxy || "";
+    if (cfg.url) $("#url").value = cfg.url;
+  }
+
+  renderDirs();
+  renderRadios("quality-opts",
+    ["原画", "4K", "1080P", "720P"].map((v) => ({ value: v, label: v })), quality,
+    (v) => { quality = v; api("save_quality", v); });
+  renderRadios("fps-opts",
+    [{ value: "0", label: "不转换" }, { value: "30", label: "转 30fps" }, { value: "24", label: "转 24fps" }], fps,
+    (v) => { fps = v; api("save_fps", v); });
+  renderRadios("proxy-opts",
+    [{ value: "system", label: "跟随系统" }, { value: "manual", label: "手动" }, { value: "direct", label: "直连" }], proxyMode,
+    (v) => { proxyMode = v; api("save_proxy_mode", v); });
+
+  // 环境检测
+  const comps = await api("get_components");
+  if (comps) renderComponents(comps);
+
+  appendLog("ytdlp4k v2 · WebView 界面已就绪", "dim");
+}
+
+/* 初始化：等 api 真正就绪再 init，未就绪则持续重试 */
+function tryInit() {
+  if (window._ytdlp4k_inited) return;
+  // api 必须真实存在才 init，否则继续等
+  if (!(window.pywebview && window.pywebview.api)) return;
+  window._ytdlp4k_inited = true;
+  init();
+}
+// 1) pywebviewready 事件
+window.addEventListener("pywebviewready", tryInit);
+// 2) 已就绪就直接跑
+tryInit();
+// 3) 兜底轮询：每 150ms 检查一次 api 是否就绪，最多 10 秒
+let _bootTries = 0;
+const _bootTimer = setInterval(function () {
+  _bootTries++;
+  if (window._ytdlp4k_inited) { clearInterval(_bootTimer); return; }
+  tryInit();
+  if (_bootTries > 66) {
+    // 10 秒后仍未就绪：浏览器调试场景，直接渲染（api 调用会走 null 兜底）
+    clearInterval(_bootTimer);
+    if (!window._ytdlp4k_inited) {
+      window._ytdlp4k_inited = true;
+      init();
+    }
+  }
+}, 150);
+
+</script>
+</body>
+</html>

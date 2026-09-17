@@ -1,0 +1,1014 @@
+/* Fallen Angels 主样式 —— 全部颜色/圆角/阴影走 CSS 变量（见 themes.css） */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  font-family: "Microsoft YaHei UI", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  background: var(--bg-app);
+  background-image: var(--app-gradient);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+}
+
+.app {
+  display: flex;
+  height: 100vh;
+}
+
+/* 每个页面 section：内部垂直堆叠（修复 Electron 下三卡片横排的 bug） */
+.page {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;  /* 让内部 overflow:auto 生效 */
+  overflow: hidden;
+}
+
+/* ============ 下载页（油管 / 社媒）：上半滚动 + 共享底栏常驻 ============
+   队列卡片会随任务增多而变长，如果整页一起滚，底部按钮行和日志框会被顶出视野
+   （用户会以为"按钮没了"）。所以拆成两块：卡片区独立滚动，底栏固定可见。
+   两个下载页共用同一套结构（class .dl-page）与同一个底栏（.dl-bottom）。 */
+.dl-page { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+.dl-page .page-scroll {
+  /* 必须是 flex 列，"让某张卡片吸收剩余空间"（见下方 .card:has(#url)）才生效 */
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;   /* 给滚动条留位，避免压住卡片圆角 */
+}
+.dl-page .page-scroll::-webkit-scrollbar { width: 8px; }
+.dl-page .page-scroll::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+}
+
+/* 每个下载页有自己的底栏（队列 + 进度条 + 按钮行 + 日志），互不干扰。
+   flex:none —— 不参与页面滚动，永远贴在底部。 */
+.dl-page .page-bottom {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+}
+/* 底栏内部的纵向间距也统一成 12px，与卡片间距同一档 */
+.dl-page .page-bottom .actions { margin-top: 12px; }
+
+/* 卡片区底部不留"多出来的一档"空白：
+   卡片彼此间距是 12px，若卡片区没有填满，剩余空间会堆在最后一张卡片与底栏之间，
+   看上去像"这里间距变大了"。这里让「视频链接」卡片吸收剩余空间（输入框随之变高），
+   于是「最后一张卡片 → 底栏」也正好是 12px。
+   用 flex-grow 而不是固定高度：只有存在剩余空间时才生效；
+   队列卡片出现后卡片区溢出，本卡片不会被拉伸，滚动行为不受影响。 */
+.dl-page .page-scroll > .card:has(.textarea) {
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+}
+.dl-page .page-scroll > .card:has(.textarea) .textarea {
+  flex: 1 0 auto;   /* 卡片变高时由输入框吃掉，不留空白在卡片底部 */
+}
+/* 日志框不再靠 flex:1 撑开（会无限长高），改用固定高度区间 */
+.dl-page .page-bottom .log {
+  flex: none;
+  /* 日志只放辅助信息，不该占大块版面。
+     高度按"整行数"给：3 行 × 行高(1.8em = 1.8 × 12px = 21.6px) + 上下内边距 20px，
+     这样不会出现"第 4 行露半截"的毛边。想改行数只改这里的 3。
+     （原来用 21vh，在默认窗口下约 160px / 6.1 行，偏大） */
+  height: calc(3 * 1.8em + 20px);
+  padding: 10px 14px;
+  margin-top: 12px;   /* 与卡片间距同档，保持整页 12px 纵向节奏 */
+}
+
+/* ============ 侧边栏 ============ */
+.sidebar {
+  width: 150px;
+  flex: none;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
+  padding: 20px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.brand {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  padding: 0 10px 0;
+  line-height: 1.25;      /* 名字换两行时也好看 */
+}
+
+/* 应用名下方的版本号：极弱色、等宽数字，不抢主标题视线 */
+.brand-version {
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--text-tertiary);
+  padding: 3px 10px 20px;
+  letter-spacing: 0.3px;
+  font-variant-numeric: tabular-nums;
+  user-select: text;       /* 版本号可选中复制，方便反馈问题时贴出来 */
+  cursor: text;
+}
+
+.brand-version:empty { display: none; }   /* 取不到版本时不占位 */
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: var(--radius-input);
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s ease-out, color 0.15s ease-out;
+}
+
+.nav-item .dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: transparent;
+  flex: none;
+}
+
+.nav-item:hover {
+  background: var(--bg-hover);
+}
+
+.nav-item.active {
+  background: var(--active-bg);
+  color: var(--active-text);
+  font-weight: 600;
+}
+
+.nav-item.active .dot {
+  background: var(--accent);
+  box-shadow: var(--glow);
+}
+
+/* ============ 主内容区 ============ */
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 24px 28px 20px;
+  overflow-y: auto;       /* 内容多时可滚动 */
+  min-height: 0;         /* 让 flex 内部 overflow 生效 */
+}
+
+.page-title {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+}
+
+.page-sub {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+/* ============ 卡片 ============ */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 14px 16px;
+  margin-top: 12px;
+}
+
+.card-title {
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+
+.card-sub {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+/* ============ 表单行 ============ */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+/* 带 hidden 属性的元素必须显式覆盖 display，否则被上面的 display:flex 顶掉
+   （.row / .modal-mask / .card 都设了 display，写一行兜底更省心） */
+[hidden] { display: none !important; }
+
+/* 防止子元素被压到 0 宽度导致文字竖排（flex-shrink: 0 + 自身 nowrap） */
+.row > * {
+  flex-shrink: 0;
+}
+
+.row-label {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  width: 46px;
+  flex: none;
+  flex-shrink: 0;
+}
+
+/* ============ 保存目录：分类行（紧凑） ============
+   分类通常只设置一次，不需要一直盯着看，所以整行刻意做小：
+   字号降一档、内边距减半、行距收紧。类别多的时候（十个八个）也不会占掉半屏视野。 */
+.dir-row {
+  gap: 8px;
+  margin-top: 6px;
+}
+.dir-row .radio .dot { width: 12px; height: 12px; }
+.dir-row .radio.checked .dot { border-width: 3.5px; }
+
+.dir-row .input {
+  font-size: 11.5px;
+  padding: 3px 8px;
+}
+.dir-row input[data-f="name"] { width: 92px; }   /* 分类名，如「1080P」「4K」 */
+.dir-row input[data-f="path"] { font-size: 11px; }
+
+.dir-row .btn {
+  font-size: 11.5px;
+  font-weight: 400;
+  padding: 3px 9px;
+  min-height: 0;
+}
+
+/* ============ 单选钮 ============ */
+/* 三态：未选中（次要色文字 + 空圈）/ 悬浮（文字提亮 + 圈变亮）/ 选中（主文字色 + 强调圈 + 加粗）
+   原来三态文字色完全一样、只有 14px 小圆点变化，暗色下几乎看不出选了哪个 */
+.radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: color 0.15s ease-out;
+}
+
+.radio:hover { color: var(--text-primary); }
+
+.radio .dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border-strong);
+  background: transparent;
+  flex: none;
+  transition: border 0.15s ease-out, box-shadow 0.15s ease-out, background 0.15s ease-out;
+}
+
+.radio:hover .dot { border-color: var(--accent); }
+
+.radio.checked {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.radio.checked .dot {
+  border: 4px solid var(--accent);
+  box-shadow: var(--glow);
+}
+
+/* ============ 输入框 ============ */
+.input {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  color: var(--text-primary);
+  padding: 8px 14px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border 0.15s ease-out;
+}
+
+.input:focus {
+  border-color: var(--border-strong);
+}
+
+/* 多行链接输入框：批量粘贴用 */
+.textarea {
+  width: 100%;
+  /* 它是卡片里的直接子元素（不像其它控件包在 .row 里靠 .row 的 margin-top 撑开），
+     所以要自己带上间距，否则会紧贴着上面那行说明小字。取 12px 与 .row 保持一致 */
+  margin-top: 12px;
+  resize: vertical;          /* 只允许纵向拉伸，防止横向拉坏布局 */
+  min-height: 62px;
+  max-height: 200px;
+  line-height: 1.6;
+  font-size: 12.5px;
+  /* 多行内容过长时横向不出滚动条，直接换行 */
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-x: hidden;
+}
+
+.textarea::-webkit-scrollbar { width: 8px; }
+.textarea::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+}
+
+/* ============ 下载任务列表 ============ */
+.task-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  margin-bottom: 8px;
+  transition: border-color 0.15s ease-out, background 0.15s ease-out;
+}
+
+.task-item:last-child { margin-bottom: 0; }
+
+/* 状态用左侧色条表达，一眼扫出哪个在下、哪个失败 */
+.task-item.state-running { border-color: var(--accent); }
+.task-item.state-done    { border-color: transparent; background: transparent; }
+.task-item.state-error   { border-color: var(--danger); }
+
+.task-main { flex: 1; min-width: 0; }
+
+.task-title {
+  font-size: 12.5px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;   /* 长标题省略号，不撑破布局 */
+  margin-bottom: 5px;
+}
+
+.task-item.state-queued .task-title { color: var(--text-secondary); }
+.task-item.state-done .task-title   { color: var(--text-secondary); }
+
+.task-bar {
+  height: 4px;
+  background: var(--bg-hover);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.task-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.25s ease-out;
+}
+
+.task-item.state-done .task-bar-fill  { background: var(--success); }
+.task-item.state-error .task-bar-fill { background: var(--danger); }
+
+.task-meta {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-top: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-pct {
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  min-width: 46px;
+  text-align: right;
+  flex: none;
+}
+
+.task-item.state-running .task-pct { color: var(--accent); }
+.task-item.state-done .task-pct    { color: var(--success); }
+.task-item.state-error .task-pct   { color: var(--danger); }
+
+/* 任务行内的小操作按钮（播放/目录） */
+.task-actions { display: flex; gap: 6px; flex: none; }
+.task-actions .btn { padding: 4px 10px; font-size: 11.5px; }
+
+/* 队列汇总条 */
+.queue-summary {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 队列自己滚：任务多了不能把下面的按钮行和日志框顶出视野（.page-bottom 是 flex:none） */
+[id^="task-list"] {
+  max-height: 30vh;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+[id^="task-list"]::-webkit-scrollbar { width: 8px; }
+[id^="task-list"]::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+}
+
+/* ============ 图片压缩结果行 ============
+   一行 = 一张图：文件名 / 原始→压缩后 / 省下百分比。状态靠左侧边框色与数字颜色区分。 */
+/* 结果列表本身不滚 —— 交给外层的 .page-scroll 统一滚，
+   否则会出现内外两条滚动条（底栏是 flex:none，不会被顶走，滚动是安全的）。 */
+.img-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+.img-row:last-child { margin-bottom: 0; }
+.img-row.done  { border-color: transparent; background: transparent; }
+.img-row.skip  { border-color: transparent; background: transparent; }
+.img-row.error { border-color: var(--danger); }
+
+.img-name {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.img-row.done .img-name,
+.img-row.skip .img-name { color: var(--text-secondary); }
+
+/* 视频处理：无损修剪实际剪出的区间（起点可能被吸附到关键帧） */
+.res-range {
+  flex: none;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  font-size: 11.5px;
+}
+.img-row.done .res-range { color: var(--text-tertiary); }
+
+.img-size {
+  flex: none;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.img-saved {
+  flex: none;
+  min-width: 58px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--success);
+  white-space: nowrap;
+}
+.img-row.skip .img-saved  { color: var(--text-tertiary); font-weight: 400; }
+.img-row.error .img-saved { color: var(--danger); font-weight: 400; }
+
+.input.readonly {
+  color: var(--text-secondary);
+}
+
+/* ============ 关键帧轨道（无损修剪） ============
+   把整片的关键帧画成刻度，直接点着挑切点，省得用户对着「间隔 2.5 秒」自己心算倍数。
+   刻度太密时（挨到只有几 px）由 JS 抽样，这里不做限制。
+   注意：.row > * 设了 flex-shrink:0，所以 flex:1 必须写在它后面才能压住（同特异性，后定义者胜）。 */
+.kf-rail {
+  position: relative;
+  flex: 1;
+  min-width: 240px;
+  height: 34px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  overflow: hidden;
+  user-select: none;
+}
+.kf-rail:hover { border-color: var(--border-strong); }
+
+/* 刻度层不吃鼠标事件，否则点到的是刻度而不是轨道本身 */
+.kf-ticks { position: absolute; inset: 0; pointer-events: none; }
+/* 1px 的刻度在深色底上等于隐形，实测要 2px + 亮一档才看得见 */
+.kf-tick {
+  position: absolute;
+  bottom: 0;
+  width: 2px;
+  height: 12px;
+  background: var(--text-secondary);
+}
+.kf-tick-major {
+  height: 18px;
+  background: var(--text-primary);
+}
+
+/* 选中区间：起点游标 → 终点游标 */
+.kf-sel {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--accent);
+  opacity: 0.16;
+  pointer-events: none;
+}
+
+/* 两个游标：起点用强调色（它是会被吸附的那个），终点用次要色 */
+.kf-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  pointer-events: none;
+}
+.kf-cursor-start { background: var(--accent); }
+.kf-cursor-end { background: var(--text-secondary); }
+/* 顶上的小方块，条子上游标多的时候一眼能找到 */
+.kf-cursor::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 1px;
+  background: inherit;
+}
+
+/* 预览播放位置（绿线）。和起点(强调色)、终点(次要色)刻意用不同颜色，
+   三者同框时才能一眼分清"我看到哪"和"切点在哪" */
+.kf-head {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--success);
+  pointer-events: none;
+}
+
+/* ============ 视频预览播放器 ============
+   左右分栏：视频在左、控制项在右。
+   竖屏素材（1080×1920）上下叠放时高度会被撑得把播放条和关键帧轨道顶出屏幕，
+   分栏后一屏内就能完成"看画面 → 拖进度 → 定起止"。 */
+.pv-split {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  margin-top: 12px;
+}
+
+.pv-video {
+  flex: 0 1 auto;
+  /* 宽度交给宽高比自己定（竖屏自然变窄、横屏自然变宽），只限制上下限 */
+  width: auto;
+  max-width: 42%;
+  max-height: clamp(180px, 32vh, 360px);
+  background: #000;
+  border-radius: 8px;
+  display: block;
+  object-fit: contain;
+}
+
+.pv-panel {
+  flex: 1 1 320px;
+  min-width: 280px;
+}
+/* 分栏里的第一行不需要额外上边距（.row/.pv-bar 默认都有） */
+.pv-panel > .pv-bar { margin-top: 0; }
+.pv-panel > .row:first-child { margin-top: 0; }
+
+.pv-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+/* range 的默认外观在各主题下都偏灰、和这套设计不搭，这里自己画一条 4px 的细轨 */
+.pv-range {
+  flex: 1;
+  min-width: 100px;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border-strong);
+  outline: none;
+  cursor: pointer;
+}
+.pv-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+}
+
+.pv-time {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.input.grow { flex: 1; min-width: 0; }
+
+/* 固定宽度的输入框：最小宽度防被压成竖排 */
+.input { min-width: 80px; }
+
+/* ============ 按钮 ============ */
+/* 四态体系：默认 → 悬浮 → 按下 → 选中。
+   原则（见 DESIGN.md）：靠明度差与边框色区分，不靠阴影、不做位移缩放。
+   主按钮(.btn 无修饰)反色实心；次要按钮(.btn.ghost)描边，四态明度递进。 */
+.btn {
+  border: 1px solid transparent;
+  background: var(--solid-bg);
+  color: var(--solid-text);
+  padding: 8px 18px;
+  border-radius: var(--radius-btn);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  box-shadow: var(--shadow-btn);
+  transition: background 0.15s ease-out, color 0.15s ease-out,
+              border-color 0.15s ease-out, opacity 0.15s ease-out;
+  white-space: nowrap;       /* 按钮文字禁止换行成竖排 */
+  flex-shrink: 0;
+}
+
+/* 主按钮悬浮：反色块用亮度提亮，比 opacity 更明确 */
+.btn:hover:not(:disabled) { filter: brightness(1.08); }
+.btn:active:not(:disabled) { filter: brightness(0.94); }
+
+/* 禁用态：不只降透明度 —— 同时抽掉边框与文字色，
+   否则在暗色下会跟"可用但未选中"的按钮混淆（两者都只是偏暗）。
+   做法：底色压到几乎与卡片同色 + 文字降到 tertiary 级 + 边框变极弱 */
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 1;                       /* 不用整体透明，避免与 hover 态混淆 */
+  background: var(--bg-card);
+  color: var(--text-tertiary);
+  border-color: var(--border);
+  box-shadow: none;
+  filter: none;
+}
+
+/* 键盘可达性：焦点环用强调色，不与悬浮态混淆 */
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---- 次要按钮：描边式，靠明度递进拉开四态 ----
+   变量都带 fallback：万一某套皮肤漏定义，也不会退化成"透明底 + 无边框"的隐形按钮 */
+.btn.ghost {
+  background: var(--btn-bg, var(--bg-input));
+  color: var(--btn-text, var(--text-secondary));
+  border: 1px solid var(--btn-border, var(--border-strong));
+  box-shadow: none;
+  font-weight: 400;
+}
+
+.btn.ghost:hover:not(:disabled) {
+  filter: none;                       /* 清掉主按钮的亮度滤镜，改用色值切换 */
+  background: var(--btn-hover-bg, var(--bg-hover));
+  color: var(--btn-hover-text, var(--text-primary));
+  border-color: var(--btn-hover-border, var(--border-strong));
+}
+
+.btn.ghost:active:not(:disabled) {
+  background: var(--btn-active-bg, var(--bg-hover));
+  color: var(--btn-hover-text, var(--text-primary));
+  border-color: var(--btn-hover-border, var(--border-strong));
+}
+
+/* 选中态：与悬浮态明确区分 —— 底色更实、边框走强调色。
+   用法：class="btn ghost is-active" 或 aria-pressed="true" */
+.btn.ghost.is-active,
+.btn.ghost[aria-pressed="true"] {
+  background: var(--btn-selected-bg, var(--accent-soft));
+  color: var(--btn-selected-text, var(--text-primary));
+  border-color: var(--btn-selected-border, var(--accent));
+  font-weight: 600;
+}
+
+/* ============ 小徽标 ============ */
+.pill {
+  background: var(--solid-bg);
+  color: var(--solid-text);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: filter 0.15s ease-out;
+}
+
+/* 实心胶囊靠亮度做反馈（与主按钮一致），比 opacity 在暗色下更明显 */
+.pill:hover { filter: brightness(1.08); }
+.pill:active { filter: brightness(0.94); }
+
+/* 胶囊变体：描边式（次要操作，如"清除已完成"） */
+.pill.ghost-pill {
+  background: var(--btn-bg);
+  color: var(--btn-text);
+  border: 1px solid var(--btn-border);
+  filter: none;
+}
+.pill.ghost-pill:hover { background: var(--btn-hover-bg); color: var(--btn-hover-text); border-color: var(--btn-hover-border); }
+
+/* 胶囊变体：危险操作（如"停止全部"）——用描边+危险色文字，不用实心红块（太扎眼） */
+.pill.danger-pill {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  filter: none;
+}
+.pill.danger-pill:hover { background: var(--danger); color: #fff; }
+
+/* ============ 下载进度条 ============ */
+.progress-wrap {
+  margin-top: 14px;
+}
+
+.progress-bar {
+  height: 8px;
+  background: var(--bg-input);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.25s ease-out;
+}
+
+.progress-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* 两个下载页各有一套进度条，按 id 前缀命中 */
+[id^="progress-percent"] {
+  font-weight: 600;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+[id^="progress-detail"] {
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ============ 按钮行 ============ */
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.status {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* ============ 日志区 ============ */
+.log {
+  flex: 1;
+  margin-top: 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 14px 16px;
+  font-family: "Microsoft YaHei UI", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--text-secondary);
+  overflow-y: auto;
+  min-height: 76px;
+}
+
+.log .line { white-space: pre-wrap; word-break: break-all; }
+.log .ok { color: var(--success); }
+.log .dim { color: var(--text-tertiary); }
+.log .warn { color: var(--warning); }
+.log .err { color: var(--danger); }
+
+/* ============ 环境检测页 ============ */
+.comp-row {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+.comp-row:last-child { border-bottom: none; }
+
+.comp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.comp-name { font-size: 14px; font-weight: 600; }
+.comp-desc { font-size: 12px; color: var(--text-secondary); margin-top: 3px; }
+
+.comp-status { font-size: 12px; font-weight: 500; }
+.comp-status.ok { color: var(--success); }
+.comp-status.miss { color: var(--danger); }
+.comp-status.busy { color: var(--warning); }
+
+/* ============ 设置页 ============ */
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+.setting-row:last-child { border-bottom: none; }
+
+.setting-label { font-size: 14px; }
+.setting-desc { font-size: 12px; color: var(--text-secondary); margin-top: 3px; }
+
+/* 皮肤选择器 */
+.skin-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.skin-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border 0.15s ease-out;
+}
+
+.skin-card.selected { border: 2px solid var(--accent); }
+
+.skin-preview { height: 70px; display: flex; }
+.skin-preview .sp-side { width: 26%; }
+.skin-preview .sp-main { flex: 1; padding: 8px; }
+
+.skin-name {
+  padding: 8px 10px;
+  font-size: 12px;
+  text-align: center;
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+/* ============ Cookies 导出教程 ============ */
+.guide-title {
+  font-size: 12px;
+  color: var(--warning);
+  margin-bottom: 8px;
+}
+
+.guide-steps {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.9;
+}
+
+.guide-steps li { margin-bottom: 2px; }
+
+.guide-note {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  line-height: 1.7;
+}
+
+/* ============ 空状态插画 ============ */
+.empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  color: var(--text-tertiary);
+  padding: 40px;
+}
+
+.empty-state svg { opacity: 0.8; }
+.empty-state .empty-title { font-size: 15px; font-weight: 500; color: var(--text-secondary); }
+.empty-state .empty-sub { font-size: 12px; }
+
+/* ============ 文件属性弹窗 ============ */
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal-mask[hidden] { display: none; }   /* 必须显式覆盖上面的 display:flex */
+
+.modal {
+  width: 560px;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 80px);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.modal-title { font-size: 14px; font-weight: 600; }
+
+.modal-close {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-family: inherit;
+}
+.modal-close:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+.modal-body { padding: 6px 18px 16px; overflow-y: auto; }
+
+.attr-sec {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  margin: 14px 0 2px;
+  letter-spacing: 0.3px;
+}
+.attr-sec:first-child { margin-top: 8px; }
+
+.attr-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.attr-row:last-child { border-bottom: none; }
+
+.attr-key { flex: none; width: 84px; color: var(--text-secondary); font-size: 12px; }
+.attr-val { flex: 1; min-width: 0; color: var(--text-primary); word-break: break-all; }

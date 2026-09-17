@@ -20,7 +20,7 @@ DisableProgramGroupPage=yes
 ; 允许用户选择安装位置（目录页保持显示）
 AllowNoIcons=yes
 OutputDir=output
-OutputBaseFilename=ytdlp4k_setup
+OutputBaseFilename=ytdlp4k_setup_v{#MyAppVersion}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern

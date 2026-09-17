@@ -1,0 +1,272 @@
+/* Fallen Angels 主题皮肤 —— 4 套，全部走 CSS 变量（学自 Cindy token 体系） */
+/* 用法：给 body 加 class theme-xxx，变量即切换（不能用 html data-theme，会干扰 pywebview api 注入） */
+
+/* ============================================================
+   皮肤一：light-cindy —— 浅色极简（近白 + pill + 零阴影）
+   ============================================================ */
+body.theme-light-cindy {
+  --bg-app: #f8f8f6;
+  --bg-sidebar: #f8f8f6;
+  --bg-card: #ffffff;
+  --bg-input: #f5f5f3;
+  --bg-chip: #111111;
+  --bg-hover: #efefec;
+
+  --text-primary: #111111;
+  --text-secondary: #737373;
+  --text-tertiary: #a3a3a3;
+  --text-on-accent: #ffffff;
+
+  /* 实心块（主按钮 / 胶囊 / 侧栏选中态）：保证前景与底色高对比 */
+  --solid-bg: #111111;
+  --solid-text: #ffffff;
+  --active-bg: #111111;
+  --active-text: #ffffff;
+
+  --accent: #111111;
+  --accent-soft: #e5e5e2;
+  --success: #2e9e4f;
+  --warning: #ea6b17;
+  --danger: #d91f37;
+
+  --border: #e5e5e2;
+  --border-strong: #d7d7d4;
+
+  /* 次要按钮（ghost）四态：默认 / 悬浮 / 按下 / 选中 */
+  --btn-bg: #f2f2ef;            /* 比卡片(#ffffff)深一档，白卡上按钮不被"吃掉" */
+  --btn-text: #4b4b4b;
+  --btn-border: #e0e0dc;
+  --btn-hover-bg: #efefec;
+  --btn-hover-text: #111111;
+  --btn-hover-border: #d7d7d4;
+  --btn-active-bg: #e5e5e2;
+  --btn-selected-bg: #111111;
+  --btn-selected-text: #ffffff;
+  --btn-selected-border: #111111;
+
+  --radius-card: 14px;
+  --radius-input: 999px;      /* pill 语言 */
+  --radius-btn: 999px;
+
+  --shadow-card: none;
+  --shadow-btn: none;
+  --glow: none;
+  --app-gradient: none;
+}
+
+/* ============================================================
+   皮肤二：dark-linear —— 深色 Linear（近黑 + 紫蓝 + 反色按钮）【默认】
+   ============================================================ */
+body.theme-dark-linear {
+  --bg-app: #08090a;
+  --bg-sidebar: #0b0c0d;
+  --bg-card: #101114;
+  --bg-input: #15171a;
+  --bg-chip: #191a1d;
+  --bg-hover: #191a1d;
+
+  --text-primary: #e2e4e7;
+  --text-secondary: #62666d;
+  --text-tertiary: #3e4147;
+  --text-on-accent: #08090a;
+
+  /* 实心块：深色 Linear 的签名手法 = 反色（浅底深字） */
+  --solid-bg: #e2e4e7;
+  --solid-text: #08090a;
+  --active-bg: #26282c;       /* 侧栏选中用轻一点的深灰块 */
+  --active-text: #e2e4e7;
+
+  --accent: #8fa4ff;
+  --accent-soft: #191a1d;
+  --success: #89d196;
+  --warning: #ffc47c;
+  --danger: #f34e52;
+
+  --border: #26282c;
+  --border-strong: #2e2e32;
+
+  /* 次要按钮（ghost）四态。
+     暗色下按钮底色必须比卡片(#101114)亮一档，否则和卡片融为一体、看不出是可点的按钮。
+     四态靠明度递进拉开：默认 #1c1e22 → 悬浮 #26282c → 按下 #17181c（比默认更暗，模拟下陷） */
+  --btn-bg: #1c1e22;
+  --btn-text: #9ea3ab;          /* 比 --text-secondary(#62666d) 亮，保证按钮文字可读 */
+  --btn-border: #2b2d32;
+  --btn-hover-bg: #26282c;
+  --btn-hover-text: #e2e4e7;
+  --btn-hover-border: #3a3d43;
+  --btn-active-bg: #17181c;
+  --btn-selected-bg: #2e3138;
+  --btn-selected-text: #e2e4e7;
+  --btn-selected-border: #8fa4ff;   /* 选中用强调色描边，与悬浮明确区分 */
+
+  --radius-card: 10px;
+  --radius-input: 8px;
+  --radius-btn: 8px;
+
+  --shadow-card: none;
+  --shadow-btn: none;
+  --glow: none;
+  --app-gradient: none;
+}
+
+/* ============================================================
+   皮肤三：light-motrix —— 浅色渐变科技（柔和渐变底 + 白卡浮起）
+   ============================================================ */
+body.theme-light-motrix {
+  --bg-app: #eef4ff;
+  --bg-sidebar: transparent;
+  --bg-card: #ffffff;
+  --bg-input: #f4f6fa;
+  --bg-chip: #eef4ff;
+  --bg-hover: #eef4ff;
+
+  --text-primary: #0f172a;
+  --text-secondary: #64748b;
+  --text-tertiary: #9aa5b5;
+  --text-on-accent: #ffffff;
+
+  /* 实心块：蓝底白字 */
+  --solid-bg: #2f7cf6;
+  --solid-text: #ffffff;
+  --active-bg: #dbeafe;       /* 侧栏选中：浅蓝底 + 深蓝字 */
+  --active-text: #1d4ed8;
+
+  --accent: #2f7cf6;
+  --accent-soft: #eef4ff;
+  --success: #12a150;
+  --warning: #d97706;
+  --danger: #dc2626;
+
+  --border: rgba(15, 23, 42, 0.06);
+  --border-strong: rgba(15, 23, 42, 0.1);
+
+  --btn-bg: #f1f5fb;            /* 比卡片(#ffffff)深一档，避免按钮隐形 */
+  --btn-text: #5b6b82;
+  --btn-border: rgba(15, 23, 42, 0.12);
+  --btn-hover-bg: #eef4ff;
+  --btn-hover-text: #2f7cf6;
+  --btn-hover-border: rgba(47, 124, 246, 0.35);
+  --btn-active-bg: #dbeafe;
+  --btn-selected-bg: #2f7cf6;
+  --btn-selected-text: #ffffff;
+  --btn-selected-border: #2f7cf6;
+
+  --radius-card: 16px;
+  --radius-input: 12px;
+  --radius-btn: 10px;
+
+  --shadow-card: 0 1px 2px rgba(15,23,42,.04), 0 12px 28px rgba(15,23,42,.08);
+  --shadow-btn: 0 2px 6px rgba(47,124,246,.35);
+  --glow: none;
+  --app-gradient: linear-gradient(135deg, #dfeaff 0%, #eef4ff 30%, #f8f9fc 60%, #eaf2ff 100%);
+}
+
+/* ============================================================
+   皮肤四：dark-neon —— 深色霓虹（深底 + 冷色发光）
+   ============================================================ */
+body.theme-dark-neon {
+  --bg-app: #0b0d12;
+  --bg-sidebar: #0f1218;
+  --bg-card: #161b23;
+  --bg-input: #0d1117;
+  --bg-chip: rgba(56, 189, 248, 0.1);
+  --bg-hover: rgba(56, 189, 248, 0.12);
+
+  --text-primary: #e6edf3;
+  --text-secondary: #7d8590;
+  --text-tertiary: #484f58;
+  --text-on-accent: #ffffff;
+
+  /* 实心块：亮青底 + 深字（发光按钮） */
+  --solid-bg: #38bdf8;
+  --solid-text: #0b0d12;
+  --active-bg: rgba(56, 189, 248, 0.18);
+  --active-text: #7dd3fc;
+
+  --accent: #38bdf8;
+  --accent-soft: rgba(56, 189, 248, 0.12);
+  --success: #3fb950;
+  --warning: #d29922;
+  --danger: #f85149;
+
+  --border: rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.14);
+
+  --btn-bg: rgba(255, 255, 255, 0.07);   /* 4% 在深底上几乎等于无底，提到 7% 才看得出是按钮 */
+  --btn-text: #a9b2bc;
+  --btn-border: rgba(255, 255, 255, 0.14);
+  --btn-hover-bg: rgba(56, 189, 248, 0.14);
+  --btn-hover-text: #7dd3fc;
+  --btn-hover-border: rgba(56, 189, 248, 0.45);
+  --btn-active-bg: rgba(56, 189, 248, 0.22);
+  --btn-selected-bg: rgba(56, 189, 248, 0.2);
+  --btn-selected-text: #7dd3fc;
+  --btn-selected-border: #38bdf8;
+
+  --radius-card: 12px;
+  --radius-input: 8px;
+  --radius-btn: 8px;
+
+  --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --shadow-btn: 0 0 18px rgba(56, 189, 248, 0.35);
+  --glow: 0 0 8px rgba(56, 189, 248, 0.6);
+  --app-gradient: radial-gradient(120% 80% at 85% -10%, rgba(56,189,248,.07), transparent 60%);
+}
+
+/* ============================================================
+   皮肤五：light-workbuddy —— WorkBuddy 浅色（白侧栏 + 浅灰工作区 + 薄荷绿点缀）
+   取自 WorkBuddy 客户端默认外观（2026-09-17 截图取色）：
+   · 侧栏纯白、主内容区极浅灰，白色大圆角卡片，几乎不用边框和阴影 —— 靠底色差分层
+   · 选中态是浅灰圆角条（不是色块），强调色只有一个薄荷绿，用在开关/主按钮/选中描边上
+   · 下拉框、按钮都是白底细边框中圆角（不是 pill）
+   ============================================================ */
+body.theme-light-workbuddy {
+  --bg-app: #f5f6f7;
+  --bg-sidebar: #ffffff;
+  --bg-card: #ffffff;
+  --bg-input: #ffffff;
+  --bg-chip: #0fc98c;
+  --bg-hover: #f0f1f2;
+
+  --text-primary: #1f2329;
+  --text-secondary: #6b7280;
+  --text-tertiary: #9ca3a5;
+  --text-on-accent: #ffffff;
+
+  /* 主操作按钮 = 品牌绿实心（WorkBuddy 的开关 / 强调就是这个绿）；
+     侧栏选中态 = 浅灰圆角条 + 深色字，跟 WorkBuddy 的列表选中一致 */
+  --solid-bg: #0fc98c;
+  --solid-text: #ffffff;
+  --active-bg: #eef0f1;
+  --active-text: #1f2329;
+
+  --accent: #0fc98c;
+  --accent-soft: #e7f8f1;
+  --success: #0fc98c;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+
+  --border: #e9eaec;
+  --border-strong: #dcdfe2;
+
+  /* ghost 按钮四态：白底细边框（WorkBuddy 下拉框的质感），悬浮只加深边框和底色 */
+  --btn-bg: #ffffff;
+  --btn-text: #3a3f45;
+  --btn-border: #e2e4e7;
+  --btn-hover-bg: #f5f6f7;
+  --btn-hover-text: #1f2329;
+  --btn-hover-border: #cfd3d7;
+  --btn-active-bg: #eef0f1;
+  --btn-selected-bg: #0fc98c;
+  --btn-selected-text: #ffffff;
+  --btn-selected-border: #0fc98c;
+
+  --radius-card: 14px;
+  --radius-input: 10px;      /* WorkBuddy 的输入框/下拉框是中圆角，不做 pill */
+  --radius-btn: 10px;
+
+  --shadow-card: none;
+  --shadow-btn: none;
+  --glow: none;
+  --app-gradient: none;
+}

@@ -1,0 +1,76 @@
+{
+  "name": "fallen-angels",
+  "version": "2.15.0",
+  "description": "Fallen Angels - YouTube 4K 视频下载器（Electron 版）",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "author": "jackyzbn-eng",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.fallenangels.app",
+    "productName": "Fallen Angels",
+    "directories": {
+      "output": "dist"
+    },
+    "electronDownload": {
+      "isVerifyChecksum": false
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json",
+      "!node_modules/**/{test,tests,__tests__,docs,example,examples}/**",
+      "!node_modules/**/*.{md,map,ts,markdown}",
+      "node_modules/sharp/**/*",
+      "node_modules/detect-libc/**/*",
+      "node_modules/semver/**/*",
+      "node_modules/@img/colour/**/*",
+      "node_modules/@img/sharp-win32-x64/**/*"
+    ],
+    "asarUnpack": [
+      "**/node_modules/@img/sharp-win32-x64/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../web",
+        "to": "web"
+      },
+      {
+        "from": "../tools",
+        "to": "tools"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "FallenAngels_setup_${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Fallen Angels",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
+    },
+    "afterPack": "./afterPack.js"
+  },
+  "dependencies": {
+    "sharp": "^0.35.4"
+  }
+}

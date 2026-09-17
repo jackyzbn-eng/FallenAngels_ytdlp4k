@@ -68,6 +68,17 @@ def _config_path():
 
 CONFIG_PATH = _config_path()
 
+# ---------- 字体层级（统一在此调整，改一处全局生效） ----------
+FONT = "Microsoft YaHei UI"
+F_H1 = (FONT, 16, "bold")        # 页面主标题
+F_LOGO = (FONT, 19, "bold")      # 侧边栏 logo
+F_H2 = (FONT, 11, "bold")        # 卡片标题
+F_BODY = (FONT, 10)              # 正文 / 导航 / 控件标签
+F_SMALL = (FONT, 9)              # 说明与辅助信息
+F_TINY = (FONT, 8)               # 行内小标签
+F_LOG = (FONT, 10)               # 日志区
+
+
 DEFAULT_CONFIG = {
     "proxy_mode": "system",            # 代理模式：system=跟随系统代理 / manual=手动指定 / direct=直连
     "proxy": "",                       # 手动模式下的代理地址，如 "http://127.0.0.1:7897"
@@ -125,93 +136,176 @@ def expand_path(p):
 
 
 class App:
-    """下载页：保存目录 / 链接 / 帧率 / 按钮 / 日志（嵌入主窗口内容区）"""
+    """下载页：卡片式布局（页头 + 可滚动配置卡片 + 固定日志区）"""
+
+    PAGE_BG = "#fafafa"      # 与 sv-ttk 主题背景一致
+    CARD_BG = "#ffffff"      # 卡片内底色（sv-ttk Card 样式 = 白色圆角卡片）
+    FG = "#1c1c1c"
+    MUTED = "#8a8a8a"
+    FONT = "Microsoft YaHei UI"
 
     def __init__(self, root, parent):
         self.root = root          # 主窗口 Tk：用于 after / messagebox / Toplevel
         self.cfg = load_config()
         self.last_file = None
-        p = parent                # UI 全部构建在该容器上
 
-        # 保存目录（分类管理）
+        page = tk.Frame(parent, bg=self.PAGE_BG)
+        page.pack(fill="both", expand=True)
+
+        # ---------- 页面头部 ----------
+        head = tk.Frame(page, bg=self.PAGE_BG)
+        head.pack(fill="x", padx=24, pady=(20, 14))
+        tk.Label(head, text="下载", font=F_H1,
+                 bg=self.PAGE_BG, fg=self.FG).pack(anchor="w")
+        tk.Label(head, text="粘贴 YouTube 链接，选好保存分类和画质，点「开始下载」",
+                 font=F_BODY, bg=self.PAGE_BG,
+                 fg=self.MUTED).pack(anchor="w", pady=(4, 0))
+
+        # ---------- 配置卡片区（可滚动） ----------
+        outer = tk.Frame(page, bg=self.PAGE_BG)
+        outer.pack(fill="both", expand=True)
+
+        self._canvas = tk.Canvas(outer, bg=self.PAGE_BG, highlightthickness=0, bd=0)
+        vbar = ttk.Scrollbar(outer, orient="vertical", command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=vbar.set)
+        vbar.pack(side="right", fill="y")
+        self._canvas.pack(side="left", fill="both", expand=True)
+
+        holder = tk.Frame(self._canvas, bg=self.PAGE_BG)
+        self._win = self._canvas.create_window((0, 0), window=holder, anchor="nw")
+
+        def _sync_scroll(_=None):
+            self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+            # 首次布局完成后归零，避免初始停在中间导致卡片标题被裁
+            if not getattr(self, "_scroll_ready", False):
+                self._scroll_ready = True
+                for _delay in (0, 120, 400):
+                    self.root.after(_delay, lambda: self._canvas.yview_moveto(0.0))
+
+        holder.bind("<Configure>", _sync_scroll)
+        self._canvas.bind("<Configure>",
+                          lambda e: self._canvas.itemconfigure(self._win, width=e.width))
+        self._canvas.bind("<Enter>",
+                          lambda e: self._canvas.bind_all("<MouseWheel>", self._on_wheel))
+        self._canvas.bind("<Leave>",
+                          lambda e: self._canvas.unbind_all("<MouseWheel>"))
+
+        # ===== 卡片 1：保存目录 =====
+        b = self._card(holder, "保存目录",
+                       "分类名可直接改；每个分类点「浏览」选一个下载文件夹",
+                       action=("＋ 添加分类", self._add_dir))
         self.dirs = self.cfg.get("dirs", [])
-        self.dir_frame = ttk.LabelFrame(p, text="保存目录（分类）")
-        self.dir_frame.pack(fill="x", padx=10, pady=6)
         self.choice = tk.IntVar(value=0)
-        head = ttk.Frame(self.dir_frame)
-        head.pack(fill="x", padx=6, pady=(6, 2))
-        ttk.Label(head, text="分类名可直接改，每个分类点“浏览”选一个下载文件夹",
-                  foreground="#888").pack(side="left")
-        ttk.Button(head, text="＋ 添加分类", command=self._add_dir).pack(side="right")
-        self.dir_box = ttk.Frame(self.dir_frame)
-        self.dir_box.pack(fill="x", padx=2, pady=(0, 6))
+        self.dir_box = tk.Frame(b, bg=self.CARD_BG)
+        self.dir_box.pack(fill="x")
         self._rebuild_dirs()
 
-        # 下载分辨率（全局档位，自动降级：所选档位高于视频实际最高时取可用最高）
-        qframe = ttk.LabelFrame(p, text="下载分辨率")
-        qframe.pack(fill="x", padx=10, pady=6)
+        # ===== 卡片 2：画质（分辨率 + 帧率） =====
+        b = self._card(holder, "画质",
+                       "分辨率高于视频实际时自动降级；帧率优先下载原版流")
         self.quality_var = tk.StringVar(value=self.cfg.get("quality", "4K"))
+        qrow = tk.Frame(b, bg=self.CARD_BG)
+        qrow.pack(fill="x")
+        tk.Label(qrow, text="分辨率", width=7, anchor="w", font=F_SMALL,
+                 bg=self.CARD_BG, fg=self.FG).pack(side="left")
         for q in QUALITY_ORDER:
-            ttk.Radiobutton(qframe, text=q, variable=self.quality_var,
-                            value=q, command=self._on_quality).pack(side="left", padx=12, pady=4)
-        ttk.Label(qframe, text="选了比视频实际更高的档位时会自动下载可用的最高画质",
-                  foreground="#888").pack(side="left", padx=(16, 0))
+            ttk.Radiobutton(qrow, text=q, variable=self.quality_var,
+                            value=q, command=self._on_quality).pack(side="left", padx=(0, 26))
+        frow = tk.Frame(b, bg=self.CARD_BG)
+        frow.pack(fill="x", pady=(10, 0))
+        tk.Label(frow, text="帧率", width=7, anchor="w", font=F_SMALL,
+                 bg=self.CARD_BG, fg=self.FG).pack(side="left")
+        self.fps_var = tk.StringVar(value=self.cfg.get("default_fps", "0"))
+        for _val, _txt in (("0", "不转换"), ("30", "转 30fps"), ("24", "转 24fps")):
+            ttk.Radiobutton(frow, text=_txt, variable=self.fps_var,
+                            value=_val).pack(side="left", padx=(0, 26))
 
-        # 链接
-        frame2 = ttk.LabelFrame(p, text="视频链接")
-        frame2.pack(fill="x", padx=10, pady=6)
+        # ===== 卡片 3：视频链接 + 代理 =====
+        b = self._card(holder, "视频链接")
         self.url_var = tk.StringVar()
-        ttk.Entry(frame2, textvariable=self.url_var, width=100).pack(padx=8, pady=6)
+        ttk.Entry(b, textvariable=self.url_var).pack(fill="x")
 
-        # 代理：默认跟随 Windows 系统代理（yt-dlp 原生支持读注册表里的系统代理设置），
-        # 也可手动指定，或强制直连。
-        prow = ttk.Frame(frame2)
-        prow.pack(fill="x", padx=8, pady=(0, 6))
-        ttk.Label(prow, text="网络代理:").pack(side="left")
+        # 代理：默认跟随 Windows 系统代理（yt-dlp 原生读注册表），也可手动指定或强制直连
+        prow = tk.Frame(b, bg=self.CARD_BG)
+        prow.pack(fill="x", pady=(14, 0))
+        tk.Label(prow, text="网络代理", font=F_TINY,
+                 bg=self.CARD_BG, fg=self.MUTED).pack(side="left", padx=(0, 14))
         if "proxy_mode" not in self.cfg:
             # 兼容旧配置：原来填了地址的视为手动模式
             self.cfg["proxy_mode"] = "manual" if self.cfg.get("proxy") else "system"
         self.proxy_mode = tk.StringVar(value=self.cfg.get("proxy_mode", "system"))
         for _val, _txt in (("system", "跟随系统代理"), ("manual", "手动指定"), ("direct", "直连")):
             ttk.Radiobutton(prow, text=_txt, variable=self.proxy_mode,
-                            value=_val, command=self._on_proxy_mode).pack(side="left", padx=(7, 0))
+                            value=_val, command=self._on_proxy_mode).pack(side="left", padx=(0, 18))
         self.proxy_var = tk.StringVar(value=self.cfg.get("proxy", ""))
-        self.proxy_entry = ttk.Entry(prow, textvariable=self.proxy_var, width=24)
-        self.proxy_entry.pack(side="left", padx=(9, 6))
-        self.proxy_hint = ttk.Label(prow, text="", foreground="#888")
+        self.proxy_entry = ttk.Entry(prow, textvariable=self.proxy_var, width=18)
+        self.proxy_entry.pack(side="left", padx=(0, 10))
+        self.proxy_hint = tk.Label(prow, text="", font=F_SMALL,
+                                   bg=self.CARD_BG, fg=self.MUTED)
         self.proxy_hint.pack(side="left")
         self._update_proxy_ui()
 
-        # 帧率转换
-        frame3 = ttk.LabelFrame(p, text="帧率转换（下载完成后自动执行，优先下载原版流）")
-        frame3.pack(fill="x", padx=10, pady=6)
-        self.fps_var = tk.StringVar(value=self.cfg.get("default_fps", "0"))
-        ttk.Radiobutton(frame3, text="不转换", variable=self.fps_var,
-                        value="0").pack(side="left", padx=10, pady=3)
-        ttk.Radiobutton(frame3, text="转 30fps", variable=self.fps_var,
-                        value="30").pack(side="left", padx=10, pady=3)
-        ttk.Radiobutton(frame3, text="转 24fps", variable=self.fps_var,
-                        value="24").pack(side="left", padx=10, pady=3)
+        # ---------- 底部固定区：按钮 + 日志（不参与伸缩，把空间留给卡片） ----------
+        bottom = tk.Frame(page, bg=self.PAGE_BG)
+        bottom.pack(fill="x", padx=24, pady=(0, 16))
 
-        # 按钮
-        btns = ttk.Frame(p)
-        btns.pack(fill="x", padx=10, pady=4)
-        self.btn = ttk.Button(btns, text="下载", command=self.start_download)
-        self.btn.pack(side="left", padx=5)
+        btns = tk.Frame(bottom, bg=self.PAGE_BG)
+        btns.pack(fill="x", pady=(0, 10))
+        self.btn = ttk.Button(btns, text="开始下载", command=self.start_download,
+                              style="Accent.TButton", width=12)
+        self.btn.pack(side="left")
         self.play_btn = ttk.Button(btns, text="播放", command=self.play_last, state="disabled")
-        self.play_btn.pack(side="left", padx=5)
+        self.play_btn.pack(side="left", padx=(8, 0))
         self.prop_btn = ttk.Button(btns, text="属性", command=self.show_props, state="disabled")
-        self.prop_btn.pack(side="left", padx=5)
-        ttk.Button(btns, text="清空日志",
-                   command=lambda: self.log.configure(state="normal") or self.log.delete("1.0", "end") or self.log.configure(state="disabled")).pack(side="left", padx=5)
-        self.status = ttk.Label(btns, text="就绪")
-        self.status.pack(side="right", padx=5)
+        self.prop_btn.pack(side="left", padx=(8, 0))
+        ttk.Button(btns, text="清空日志", command=self._clear_log).pack(side="left", padx=(8, 0))
+        self.status = tk.Label(btns, text="就绪", font=F_SMALL,
+                               bg=self.PAGE_BG, fg="#005fb8")
+        self.status.pack(side="right")
 
-        # 日志
-        self.log = scrolledtext.ScrolledText(p, height=18, state="disabled")
-        self.log.pack(fill="both", expand=True, padx=10, pady=6)
+        self.log = scrolledtext.ScrolledText(
+            bottom, height=6, state="disabled",
+            font=F_LOG, relief="flat", bd=0,
+            bg="#ffffff", fg="#2b2b2b",
+            insertbackground="#2b2b2b",
+            selectbackground="#cce4f7",
+            highlightthickness=1, highlightbackground="#e5e5e5",
+            highlightcolor="#005fb8", padx=12, pady=10)
+        self.log.pack(fill="x")
 
         self.load_last()
+        if not self.log.get("1.0", "end").strip():
+            self.append_log("准备就绪。粘贴 YouTube 链接即可开始下载。")
+
+    # ---------- 卡片与滚动 ----------
+    def _card(self, parent, title, subtitle=None, action=None):
+        """基于 sv-ttk 自带的 Card 样式创建卡片，返回内容容器。
+        action=(文字, 回调) 时在标题右侧放一个操作按钮。"""
+        card = ttk.Frame(parent, style="Card.TFrame")
+        card.pack(fill="x", padx=20, pady=(0, 12))
+        pad = tk.Frame(card, bg=self.CARD_BG)
+        pad.pack(fill="x", padx=8, pady=8)
+        head_row = tk.Frame(pad, bg=self.CARD_BG)
+        head_row.pack(fill="x")
+        tk.Label(head_row, text=title, font=F_H2,
+                 bg=self.CARD_BG, fg=self.FG).pack(side="left")
+        if action:
+            ttk.Button(head_row, text=action[0],
+                       command=action[1]).pack(side="right")
+        if subtitle:
+            tk.Label(pad, text=subtitle, font=F_SMALL,
+                     bg=self.CARD_BG, fg=self.MUTED).pack(anchor="w", pady=(3, 0))
+        body = tk.Frame(pad, bg=self.CARD_BG)
+        body.pack(fill="x", pady=(8, 0))
+        return body
+
+    def _on_wheel(self, event):
+        self._canvas.yview_scroll(int(-event.delta / 120), "units")
+
+    def _clear_log(self):
+        self.log.configure(state="normal")
+        self.log.delete("1.0", "end")
+        self.log.configure(state="disabled")
 
     # ---------- 配置与工具 ----------
     def load_last(self):
@@ -230,20 +324,21 @@ class App:
         self.dir_name_vars = []
         self.dir_path_vars = []
         for i, d in enumerate(self.dirs):
-            row = ttk.Frame(self.dir_box)
-            row.pack(fill="x", padx=4, pady=1)
+            row = tk.Frame(self.dir_box, bg=self.CARD_BG)
+            row.pack(fill="x", pady=3)
             ttk.Radiobutton(row, variable=self.choice, value=i).pack(side="left")
             nv = tk.StringVar(value=d.get("name", ""))
             nv.trace_add("write", self._on_dir_edited)
             self.dir_name_vars.append(nv)
-            ttk.Entry(row, textvariable=nv, width=13).pack(side="left", padx=(0, 6))
+            ttk.Entry(row, textvariable=nv, width=12).pack(side="left", padx=(0, 8))
             pv = tk.StringVar(value=d.get("path", ""))
             self.dir_path_vars.append(pv)
-            ttk.Entry(row, textvariable=pv, width=44, state="readonly").pack(side="left")
-            ttk.Button(row, text="浏览", width=5,
-                       command=lambda i=i: self._pick_dir(i)).pack(side="left", padx=4)
+            ttk.Entry(row, textvariable=pv, state="readonly").pack(
+                side="left", fill="x", expand=True, padx=(0, 8))
+            ttk.Button(row, text="浏览",
+                       command=lambda i=i: self._pick_dir(i)).pack(side="left")
             ttk.Button(row, text="✕", width=2,
-                       command=lambda i=i: self._del_dir(i)).pack(side="left")
+                       command=lambda i=i: self._del_dir(i)).pack(side="left", padx=(4, 0))
         # 单选值越界时收回（删除分类导致）
         if self.choice.get() < 0:
             self.choice.set(0)
@@ -309,14 +404,19 @@ class App:
         mode = self.proxy_mode.get()
         if mode == "manual":
             self.proxy_entry.configure(state="normal")
-            self.proxy_hint.configure(text="例：http://127.0.0.1:7897")
+            self.proxy_hint.configure(text="例 127.0.0.1:7897")
         elif mode == "system":
             self.proxy_entry.configure(state="disabled")
-            _url, msg = envcheck.get_system_proxy()
-            self.proxy_hint.configure(text="→ " + msg)
+            url, msg = envcheck.get_system_proxy()
+            if url:
+                # 只显示地址主体，避免过长把这一行撑爆
+                short = url.replace("http://", "").replace("https://", "")
+                self.proxy_hint.configure(text="系统代理 " + short)
+            else:
+                self.proxy_hint.configure(text=msg)
         else:
             self.proxy_entry.configure(state="disabled")
-            self.proxy_hint.configure(text="→ 不使用任何代理")
+            self.proxy_hint.configure(text="不走代理")
 
     def get_fmt(self):
         """按当前下载分辨率档位取格式选择器（档位是上限，视频不够高时自动取可用最高）"""
@@ -647,7 +747,12 @@ class App:
 class EnvPage:
     """必需环境检测页：yt-dlp / ffmpeg / deno 状态检测 + 一键安装（嵌入主窗口内容区）"""
 
-    STATE_COLORS = {"ok": "#1a7f37", "miss": "#c62828", "busy": "#b26a00", "idle": "#888"}
+    PAGE_BG = "#fafafa"
+    CARD_BG = "#ffffff"
+    FG = "#1c1c1c"
+    MUTED = "#8a8a8a"
+    FONT = "Microsoft YaHei UI"
+    STATE_COLORS = {"ok": "#0f7b0f", "miss": "#c42b1c", "busy": "#9d5d00", "idle": "#8a8a8a"}
 
     def __init__(self, root, parent):
         self.root = root          # 主窗口 Tk：用于 after / messagebox
@@ -659,35 +764,49 @@ class EnvPage:
         self.bar = {}
         self.installing = False
 
-        pad = ttk.Frame(parent, padding=24)
-        pad.pack(fill="both", expand=True)
+        page = tk.Frame(parent, bg=self.PAGE_BG)
+        page.pack(fill="both", expand=True)
 
-        ttk.Label(pad, text="必需环境检测",
-                  font=("Microsoft YaHei", 15, "bold")).pack(anchor="w")
-        ttk.Label(pad, text="ytdlp4k 需要三个组件：yt-dlp（下载内核）、ffmpeg（音视频合并/转码）、"
-                            "deno（YouTube 反爬校验的 JS 运行时）。"
-                            "缺失的组件点“一键安装缺失组件”即可自动下载配置，无需手动装软件、无需 Python。",
-                  foreground="#666", wraplength=700).pack(anchor="w", pady=(4, 12))
+        # ---------- 页面头部 ----------
+        head = tk.Frame(page, bg=self.PAGE_BG)
+        head.pack(fill="x", padx=24, pady=(20, 14))
+        tk.Label(head, text="必需环境检测", font=F_H1,
+                 bg=self.PAGE_BG, fg=self.FG).pack(anchor="w")
+        tk.Label(head, text="运行需要三个组件，缺失的点「一键安装缺失组件」自动补齐，无需手动装软件",
+                 font=F_BODY, bg=self.PAGE_BG,
+                 fg=self.MUTED).pack(anchor="w", pady=(4, 0))
 
+        # ---------- 组件卡片 ----------
+        card = ttk.Frame(page, style="Card.TFrame")
+        card.pack(fill="x", padx=20)
+        inner = tk.Frame(card, bg=self.CARD_BG)
+        inner.pack(fill="x", padx=16, pady=14)
+        tk.Label(inner, text="组件状态", font=F_H2,
+                 bg=self.CARD_BG, fg=self.FG).pack(anchor="w")
         for key in envcheck.COMPONENTS:
-            self._build_row(pad, key)
+            self._build_row(inner, key)
 
-        # 进度区
-        self.progress_bar = ttk.Progressbar(pad, mode="determinate", maximum=1000)
-        self.progress_bar.pack(fill="x", pady=(16, 4))
-        self.progress_var = tk.StringVar(value="")
-        ttk.Label(pad, textvariable=self.progress_var, foreground="#555").pack(anchor="w")
-
-        # 按钮区
-        btns = ttk.Frame(pad)
-        btns.pack(fill="x", pady=(18, 0))
-        self.install_btn = ttk.Button(btns, text="一键安装缺失组件", command=self.install_missing)
+        # ---------- 操作按钮 ----------
+        act = tk.Frame(page, bg=self.PAGE_BG)
+        act.pack(fill="x", padx=24, pady=(14, 0))
+        self.install_btn = ttk.Button(act, text="一键安装缺失组件",
+                                      command=self.install_missing,
+                                      style="Accent.TButton")
         self.install_btn.pack(side="left")
-        ttk.Button(btns, text="重新检测", command=self.refresh).pack(side="right")
+        ttk.Button(act, text="重新检测", command=self.refresh).pack(side="left", padx=(8, 0))
+
+        # ---------- 进度与提示 ----------
+        self.progress_bar = ttk.Progressbar(page, mode="determinate", maximum=1000)
+        self.progress_bar.pack(fill="x", padx=24, pady=(14, 4))
+        self.progress_var = tk.StringVar(value="")
+        tk.Label(page, textvariable=self.progress_var, font=F_SMALL,
+                 bg=self.PAGE_BG, fg=self.MUTED).pack(anchor="w", padx=24)
 
         self.hint_var = tk.StringVar()
-        ttk.Label(pad, textvariable=self.hint_var, foreground="#c55",
-                  wraplength=700).pack(anchor="w", pady=(10, 0))
+        self.hint_lbl = tk.Label(page, textvariable=self.hint_var, font=F_SMALL,
+                                 bg=self.PAGE_BG, fg=self.MUTED, wraplength=720,
+                                 justify="left")
+        self.hint_lbl.pack(anchor="w", padx=24, pady=(8, 0))
 
         # 后台线程 → 主线程消息队列（避免跨线程直接调 tkinter）
         self._q = queue.Queue()
@@ -713,19 +832,23 @@ class EnvPage:
 
     # ---------- UI 构建 ----------
     def _build_row(self, parent, key):
+        """组件状态行：名称 …… 状态 / 说明文字 / 进度条"""
         info = self.info[key]
-        card = ttk.Frame(parent, padding=(12, 10), relief="groove")
-        card.pack(fill="x", pady=6)
-        head = ttk.Frame(card)
-        head.pack(fill="x")
-        ttk.Label(head, text=info["name"], font=("Microsoft YaHei", 11, "bold")).pack(side="left")
+        row = tk.Frame(parent, bg=self.CARD_BG)
+        row.pack(fill="x", pady=(12, 0))
+        line = tk.Frame(row, bg=self.CARD_BG)
+        line.pack(fill="x")
+        tk.Label(line, text=info["name"], font=(FONT, 10, "bold"),
+                 bg=self.CARD_BG, fg=self.FG).pack(side="left")
         sv = tk.StringVar(value="检测中...")
-        st = ttk.Label(head, textvariable=sv, foreground=self.STATE_COLORS["idle"])
+        st = tk.Label(line, textvariable=sv, font=F_SMALL,
+                      bg=self.CARD_BG, fg=self.STATE_COLORS["idle"])
         st.pack(side="right")
         self.status_var[key] = sv
         self.status_lbl[key] = st
-        ttk.Label(card, text=info["desc"], foreground="#888").pack(anchor="w", pady=(2, 0))
-        bar = ttk.Progressbar(card, mode="determinate", maximum=1000)
+        tk.Label(row, text=info["desc"], font=F_SMALL,
+                 bg=self.CARD_BG, fg=self.MUTED).pack(anchor="w", pady=(2, 0))
+        bar = ttk.Progressbar(row, mode="determinate", maximum=1000)
         self.bar[key] = bar
 
     # ---------- 检测 ----------
@@ -755,11 +878,13 @@ class EnvPage:
                 self.status_lbl[key].configure(foreground=self.STATE_COLORS["miss"])
         if missing:
             self.install_btn.configure(state="normal")
+            self.hint_lbl.configure(fg="#c42b1c")
             self.hint_var.set("缺少: " + "、".join(self.info[k]["name"] for k in missing) +
                               "。点击“一键安装缺失组件”自动下载（首次约需 150 MB）。" +
                               "若下载缓慢，可在 config.json 中配置 proxy 后点“重新检测”重试。")
         else:
             self.install_btn.configure(state="disabled")
+            self.hint_lbl.configure(fg="#0f7b0f")
             self.hint_var.set("环境就绪，可直接在“下载”页使用")
         self.progress_var.set("")
 
@@ -829,33 +954,53 @@ class MainWindow:
 
     NAV = [("download", "下载"), ("env", "必需环境检测")]
 
+    # Windows 11 Fluent 浅色配色
+    SIDE_BG = "#f3f3f3"
+    SIDE_HOVER = "#e9e9e9"
+    SIDE_SEL = "#e8f0fb"
+    ACCENT = "#0067c0"
+    TEXT = "#1a1a1a"
+    MUTED = "#8a8a8a"
+    FONT = "Microsoft YaHei UI"
+
     def __init__(self, root):
         self.root = root
-        root.title("ytdlp4k - YouTube 4K 视频下载器")
-        root.geometry("960x620")
-        root.resizable(False, False)
+        self._current = None
+        root.title("ytdlp4k - YouTube 视频下载器")
+        root.geometry("1020x760")
+        root.minsize(920, 640)
+
+        body = ttk.Frame(root)
+        body.pack(fill="both", expand=True)
 
         # ---------- 左侧导航栏 ----------
-        side_bg = "#eceff1"
-        self.side = tk.Frame(root, bg=side_bg, width=176)
-        self.side.pack(side="left", fill="y")
-        self.side.pack_propagate(False)
+        side = tk.Frame(body, bg=self.SIDE_BG, width=196)
+        side.pack(side="left", fill="y")
+        side.pack_propagate(False)
 
-        tk.Label(self.side, text="ytdlp4k", font=("Microsoft YaHei", 16, "bold"),
-                 bg=side_bg, fg="#333").pack(anchor="w", padx=18, pady=(20, 22))
+        tk.Label(side, text="ytdlp4k", font=F_LOGO,
+                 bg=self.SIDE_BG, fg=self.TEXT).pack(anchor="w", padx=22, pady=(26, 2))
+        tk.Label(side, text="YouTube 视频下载器", font=F_SMALL,
+                 bg=self.SIDE_BG, fg=self.MUTED).pack(anchor="w", padx=22, pady=(0, 26))
 
-        self.nav_btns = {}
+        self.nav_rows = {}
         for key, text in self.NAV:
-            b = tk.Button(self.side, text=text, font=("Microsoft YaHei", 10),
-                          relief="flat", bd=0, anchor="w", padx=14, pady=9,
-                          bg=side_bg, fg="#333",
-                          activebackground="#d7dce0",
-                          command=lambda k=key: self.show(k))
-            b.pack(fill="x", padx=10, pady=3)
-            self.nav_btns[key] = b
+            row = tk.Frame(side, bg=self.SIDE_BG, cursor="hand2")
+            row.pack(fill="x", padx=10, pady=2)
+            bar = tk.Frame(row, bg=self.SIDE_BG, width=3)   # 左侧指示条
+            bar.pack(side="left", fill="y")
+            lbl = tk.Label(row, text=text, font=F_BODY,
+                           bg=self.SIDE_BG, fg=self.TEXT, anchor="w",
+                           padx=14, pady=11)
+            lbl.pack(side="left", fill="x", expand=True)
+            for w in (row, lbl):
+                w.bind("<Button-1>", lambda e, k=key: self.show(k))
+                w.bind("<Enter>", lambda e, k=key: self._hover(k, True))
+                w.bind("<Leave>", lambda e, k=key: self._hover(k, False))
+            self.nav_rows[key] = (row, bar, lbl)
 
         # ---------- 右侧内容区 ----------
-        content = tk.Frame(root)
+        content = ttk.Frame(body)
         content.pack(side="left", fill="both", expand=True)
         content.grid_rowconfigure(0, weight=1)
         content.grid_columnconfigure(0, weight=1)
@@ -865,8 +1010,16 @@ class MainWindow:
         self.pages["env"] = self._make_page(content, EnvPage)
         self.show("download")
 
+    def _hover(self, key, on):
+        if self._current == key:
+            return
+        row, _bar, lbl = self.nav_rows[key]
+        bg = self.SIDE_HOVER if on else self.SIDE_BG
+        row.configure(bg=bg)
+        lbl.configure(bg=bg)
+
     def _make_page(self, content, page_cls):
-        f = tk.Frame(content)
+        f = ttk.Frame(content)
         f.grid(row=0, column=0, sticky="nsew")
         inst = page_cls(self.root, f)
         inst.frame = f
@@ -874,17 +1027,38 @@ class MainWindow:
 
     def show(self, key):
         """切换右侧页面并高亮侧边栏当前项"""
+        self._current = key
         self.pages[key].frame.tkraise()
-        sel_bg = "#bcd6ee"
-        for k, b in self.nav_btns.items():
+        for k, (row, bar, lbl) in self.nav_rows.items():
             if k == key:
-                b.configure(bg=sel_bg, fg="#0d47a1")
+                row.configure(bg=self.SIDE_SEL)
+                lbl.configure(bg=self.SIDE_SEL, fg=self.ACCENT,
+                              font=(FONT, 10, "bold"))
+                bar.configure(bg=self.ACCENT)
             else:
-                b.configure(bg="#eceff1", fg="#333")
+                row.configure(bg=self.SIDE_BG)
+                lbl.configure(bg=self.SIDE_BG, fg=self.TEXT,
+                              font=F_BODY)
+                bar.configure(bg=self.SIDE_BG)
 
 
 def main():
     root = tk.Tk()
+    try:
+        import sv_ttk
+        sv_ttk.set_theme("light")       # Windows 11 Fluent 浅色主题
+    except Exception:
+        pass                            # 主题库缺失时回退到系统默认
+    root.option_add("*Font", (FONT, 10))
+    # ttk 控件（按钮/单选框/输入框）字体统一为微软雅黑：
+    # sv-ttk 默认用 Segoe UI，中文走系统回退，字形和字号与自绘部分不统一
+    _style = ttk.Style()
+    for _name in ("TButton", "TRadiobutton", "TCheckbutton", "TEntry",
+                  "TCombobox", "TSpinbox", "TLabelframe.Label", "TLabel"):
+        try:
+            _style.configure(_name, font=F_BODY)
+        except Exception:
+            pass
     MainWindow(root)
     root.mainloop()
 
