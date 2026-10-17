@@ -23,8 +23,18 @@ html, body {
   display: flex;
   flex-direction: column;
   min-height: 0;  /* 让内部 overflow:auto 生效 */
-  overflow: hidden;
+  /* ⚠️ 这里**不能**写 overflow: hidden ——
+     它只对"自带内层滚动区"的下载页成立（那些页是 .dl-page，另有 .page-scroll 承担滚动，
+     外层必须 hidden 才不出现双滚动条）。而检测页 / 设置页这类普通页**没有内层滚动区**，
+     一旦外层也 hidden，超出视口的内容会被直接裁掉、且不会产生滚动条 ——
+     表现就是"页尾那几行字凭空消失，怎么滚都滚不出来"（检测页的 #env-hint 与
+     「启动兼容模式」那行就这么被藏了很久）。所以普通页一律自己滚。 */
+  /* 普通页自己滚；横向一律禁止，避免出现横拉滚动条 */
+  overflow-y: auto;
+  overflow-x: hidden;
 }
+/* 只有下载页需要外层锁住、把滚动交给内部的 .page-scroll */
+.page.dl-page { overflow: hidden; }
 
 /* ============ 下载页（油管 / 社媒）：上半滚动 + 共享底栏常驻 ============
    队列卡片会随任务增多而变长，如果整页一起滚，底部按钮行和日志框会被顶出视野
@@ -887,9 +897,9 @@ html, body {
 
 .skin-card.selected { border: 2px solid var(--accent); }
 
-.skin-preview { height: 70px; display: flex; }
-.skin-preview .sp-side { width: 26%; }
-.skin-preview .sp-main { flex: 1; padding: 8px; }
+.skin-preview { height: 70px; display: flex; overflow: hidden; }
+.skin-preview .sp-side { width: 26%; flex: none; }
+.skin-preview .sp-main { flex: 1; padding: 8px; position: relative; overflow: hidden; }
 
 .skin-name {
   padding: 8px 10px;
@@ -1012,3 +1022,211 @@ html, body {
 
 .attr-key { flex: none; width: 84px; color: var(--text-secondary); font-size: 12px; }
 .attr-val { flex: 1; min-width: 0; color: var(--text-primary); word-break: break-all; }
+
+/* ============================================================
+   玻璃皮肤家族专用规则（深海 / 翡翠 / 紫晶 / 熔金，共 4 套）
+   ------------------------------------------------------------
+   四套共用同一段规则，靠变量区分；只有确实有差异的地方才单独写一条。
+   三件事：① 流体背景层 ② 面板玻璃化 ③ 强调色换成该配色的渐变
+   ============================================================ */
+
+/* ---------- ① 流体背景 ----------
+   <canvas id="fluid-bg"> 由 fluid.js 用 WebGL2 画（fbm 噪声 + curl 涡流 + 域扭曲），
+   挂在 z-index:-2。面板的 backdrop-filter 会把画面揉成柔和色晕 —— 模糊的输入正是这层真人画的流体。 */
+
+#fluid-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  width: 100%;
+  height: 100%;
+  display: none;                     /* 默认不显示，只有 WebGL 初始化成功才打开 */
+  pointer-events: none;
+  background: #000;
+}
+body.has-fluid #fluid-bg { display: block; }
+
+/* 没有 WebGL2（或上下文丢失）时的兜底：用该配色自己的 5 个色阶铺一层静态渐变。
+   有 .has-fluid 时不启用，避免和真流体两层叠着。 */
+body.theme-dark-glass::before,
+body.theme-glass-ocean::before,
+body.theme-glass-aurora::before,
+body.theme-glass-amethyst::before,
+body.theme-glass-ember::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  background: var(--fluid-fallback);
+}
+body.has-fluid.theme-dark-glass::before,
+body.has-fluid.theme-glass-ocean::before,
+body.has-fluid.theme-glass-aurora::before,
+body.has-fluid.theme-glass-amethyst::before,
+body.has-fluid.theme-glass-ember::before { display: none; }
+
+/* 细颗粒层：Beyond Glass 的着色器里 grain 是在 GPU 上做的。
+   WebGL 那层已经在算 grain 了，所以这里只在"退回 CSS"时叠一层 DOM 噪点。
+   单色玻璃最容易"塑料感"，一层极淡颗粒能把它拉回真实材质。 */
+body.theme-dark-glass:not(.has-fluid)::after,
+body.theme-glass-ocean:not(.has-fluid)::after,
+body.theme-glass-aurora:not(.has-fluid)::after,
+body.theme-glass-amethyst:not(.has-fluid)::after,
+body.theme-glass-ember:not(.has-fluid)::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.35;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='140' height='140'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/></filter><rect width='140' height='140' filter='url(%23n)' opacity='0.5'/></svg>");
+}
+
+/* ---------- ② 面板玻璃化 ----------
+   凡是"一整块面板"的东西都挂 blur：侧栏、卡片、输入框、日志、弹窗、列表行。
+   模糊半径统一读 --glass-blur，想整套调软硬只改主题里的一个变量。
+   注意：blur 会把背后的流体画面揉开 —— 流体越活，玻璃质感越明显，两者是配套的。
+   ⚠️ 选择器只用 [class*="theme-glass-"] 加 .theme-dark-glass，**别用 .has-fluid**：
+   它挂在 body 上，会波及另外五套浅色皮肤（卡片本来是纯白不透明的，
+   误加 blur 后底色变半透明，实测就这么污染过 light-cindy）。 */
+body[class*="theme-glass-"] .sidebar,
+body.theme-dark-glass .sidebar,
+body[class*="theme-glass-"] .card,
+body.theme-dark-glass .card,
+body[class*="theme-glass-"] .log,
+body.theme-dark-glass .log,
+body[class*="theme-glass-"] .modal,
+body.theme-dark-glass .modal,
+body[class*="theme-glass-"] .task-item,
+body.theme-dark-glass .task-item,
+body[class*="theme-glass-"] .img-row,
+body.theme-dark-glass .img-row,
+body[class*="theme-glass-"] .skin-card,
+body.theme-dark-glass .skin-card,
+body[class*="theme-glass-"] .input,
+body.theme-dark-glass .input,
+body[class*="theme-glass-"] textarea.input,
+body.theme-dark-glass textarea.input {
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
+
+/* 侧栏是整面玻璃墙，模糊要更狠、底色要更薄，让流体从后面透出来 */
+body[class*="theme-glass-"] .sidebar,
+body.theme-dark-glass .sidebar {
+  background: var(--glass-panel);
+  border-right: 0.5px solid var(--glass-edge);
+}
+
+/* 卡片：斜向的极淡渐变 + 顶边 0.5px 高光 = 玻璃的"厚度"。
+   高光用 inset 阴影而不是 border-top，因为 inset 会跟着圆角走。 */
+body[class*="theme-glass-"] .card,
+body.theme-dark-glass .card {
+  background-color: var(--glass-panel);
+  background-image: linear-gradient(155deg,
+    rgba(255, 255, 255, 0.07) 0%,
+    rgba(255, 255, 255, 0.02) 42%,
+    rgba(255, 255, 255, 0.04) 100%);
+  border: 0.5px solid var(--glass-edge);
+}
+
+body[class*="theme-glass-"] .log,
+body.theme-dark-glass .log {
+  background-color: var(--glass-input);
+  border: 0.5px solid var(--glass-edge);
+}
+
+/* 输入框做"内凹玻璃"：底色比卡片更深、描边更淡，视觉上沉下去一层 */
+body[class*="theme-glass-"] .input,
+body.theme-dark-glass .input,
+body[class*="theme-glass-"] textarea.input,
+body.theme-dark-glass textarea.input {
+  background: var(--glass-input);
+  border: 0.5px solid rgba(255, 255, 255, 0.10);
+  color: var(--text-primary);
+}
+body[class*="theme-glass-"] .input::placeholder,
+body.theme-dark-glass .input::placeholder,
+body[class*="theme-glass-"] textarea.input::placeholder,
+body.theme-dark-glass textarea.input::placeholder { color: var(--text-tertiary); }
+body[class*="theme-glass-"] .input:focus,
+body.theme-dark-glass .input:focus,
+body[class*="theme-glass-"] textarea.input:focus,
+body.theme-dark-glass textarea.input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* 弹窗要压住背后的一切，用更实的玻璃（模糊更狠 + 底色更重），否则文字会和背景糊在一起 */
+body[class*="theme-glass-"] .modal,
+body.theme-dark-glass .modal {
+  background: var(--glass-panel-strong);
+  border: 0.5px solid var(--glass-edge);
+  -webkit-backdrop-filter: blur(40px) saturate(1.6);
+  backdrop-filter: blur(40px) saturate(1.6);
+}
+body[class*="theme-glass-"] .modal-mask,
+body.theme-dark-glass .modal-mask { background: rgba(4, 6, 14, 0.55); }
+
+/* 任务行 / 图片行本来是实心块，玻璃皮肤下改成"更薄的一片玻璃" */
+body[class*="theme-glass-"] .task-item,
+body.theme-dark-glass .task-item,
+body[class*="theme-glass-"] .img-row,
+body.theme-dark-glass .img-row {
+  background-color: rgba(255, 255, 255, 0.05);
+  border: 0.5px solid var(--glass-edge);
+}
+
+/* ---------- ③ 强调色 ----------
+   只给"面"上渐变（实心块、进度条、选中条、激活点）；
+   文字仍然用单色 --accent —— 渐变文字在小字号下会糊成一团，读不清。 */
+body[class*="theme-glass-"] .btn:not(.ghost),
+body.theme-dark-glass .btn:not(.ghost),
+body[class*="theme-glass-"] .pill:not(.ghost-pill):not(.danger-pill),
+body.theme-dark-glass .pill:not(.ghost-pill):not(.danger-pill) {
+  background: var(--solid-bg);
+  color: var(--solid-text);
+}
+
+/* 导航选中态：左侧一道强调色竖条 + 半透明亮块（Beyond Glass 的左栏就是这个手法） */
+body[class*="theme-glass-"] .nav-item.active,
+body.theme-dark-glass .nav-item.active {
+  background: linear-gradient(90deg, var(--accent-soft), transparent 75%);
+  color: #ffffff;
+  box-shadow: inset 2px 0 0 0 var(--accent);
+}
+
+body[class*="theme-glass-"] .nav-item.active .dot,
+body.theme-dark-glass .nav-item.active .dot {
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+
+body[class*="theme-glass-"] .progress-fill,
+body.theme-dark-glass .progress-fill { background: var(--accent-grad); }
+
+body[class*="theme-glass-"] .task-item.state-done .task-bar-fill,
+body.theme-dark-glass .task-item.state-done .task-bar-fill { background: linear-gradient(90deg, #6ee7a8, #8ee7c8); }
+body[class*="theme-glass-"] .task-item.state-error .task-bar-fill,
+body.theme-dark-glass .task-item.state-error .task-bar-fill { background: linear-gradient(90deg, #ff7a8a, #ff9ad5); }
+
+/* 皮肤选择卡：白玻璃底（能看清四套配色各自的色相差），选中用强调色描边 + 一圈很淡的外发光 */
+body[class*="theme-glass-"] .skin-card,
+body.theme-dark-glass .skin-card {
+  border: 0.5px solid var(--glass-edge);
+  background: rgba(255, 255, 255, 0.10);
+}
+body[class*="theme-glass-"] .skin-card.selected,
+body.theme-dark-glass .skin-card.selected {
+  border: 1.5px solid var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft), 0 0 18px var(--accent-soft);
+}
+
+/* 滚动条也玻璃化：默认的实心灰条在玻璃面板上太"实" */
+body[class*="theme-glass-"] ::-webkit-scrollbar-thumb,
+body.theme-dark-glass ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.16); }
+body[class*="theme-glass-"] ::-webkit-scrollbar-thumb:hover,
+body.theme-dark-glass ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.28); }
+

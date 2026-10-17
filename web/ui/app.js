@@ -4,35 +4,144 @@ const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
 
 /* ============ 皮肤 ============ */
+/* colors = [底, 卡片/面板, 强调]，皮肤选择卡的缩略图按这三个色现画。
+   玻璃那四套的 colors 取的是 dsh-beyond-glass 里对应流体配色的
+   colors[0]（底色）/ colors[2]（中间色阶）/ accent —— 缩略图上色相差一眼能分出来，
+   光看「深海/翡翠/紫晶/熔金」四个词是分不清谁是谁的。 */
 const SKINS = [
   { id: "light-cindy",     name: "浅色极简",      colors: ["#f8f8f6", "#ffffff", "#111111"] },
   { id: "light-workbuddy", name: "WorkBuddy 浅色", colors: ["#f5f6f7", "#ffffff", "#0fc98c"] },
   { id: "dark-linear",     name: "深色 Linear",   colors: ["#08090a", "#101114", "#8fa4ff"] },
   { id: "light-motrix",    name: "渐变科技",      colors: ["#dfeaff", "#ffffff", "#2f7cf6"] },
   { id: "dark-neon",       name: "深色霓虹",      colors: ["#0b0d12", "#161b23", "#38bdf8"] },
+  { id: "dark-glass",      name: "玻璃·深海",     colors: ["#000000", "#204a7e", "#538dca"] },
+  { id: "glass-aurora",    name: "玻璃·翡翠",     colors: ["#020807", "#0f7168", "#4be0c1"] },
+  { id: "glass-amethyst",  name: "玻璃·紫晶",     colors: ["#05020b", "#57318c", "#b46fff"] },
+  { id: "glass-ember",     name: "玻璃·熔金",     colors: ["#080201", "#92361e", "#ff8a45"] },
 ];
 
 let currentSkin = "dark-linear";
 
-function applySkin(id) {
+/* 套用皮肤。
+   persist=false 用于"启动时先套一个默认皮肤占位"——那种调用**绝不能写配置**，
+   否则会在异步读到用户真实皮肤之前，先用默认值把用户的设置覆盖掉（真踩过：
+   用户选的玻璃皮肤每次重启都会被打回深色 Linear，且配置里被改写成 dark-linear，
+   表现像"皮肤选择不生效"，其实是开机那一下自己回写的）。
+
+   另外：applySkin 保持**同步**——body class 立刻生效，视觉不等 IO。
+   只有写配置那一步是异步的，且失败了也不该影响界面。 */
+function applySkin(id, persist = true) {
   currentSkin = id;
   // 用 body class 切换主题
   document.body.className = "theme-" + id;
+  // 玻璃皮肤的"外衣"是流体画布画的，换配色要通知渲染器换调色板
+  // （非玻璃皮肤下它会自己停循环、把 .has-fluid 摘掉，别在别的皮肤下白烧 GPU）
+  if (window.__fluid) {
+    try { window.__fluid.setSkin(id); } catch (e) {}
+  }
   renderSkinGrid();
+  // 换了皮肤，性能档位那行跟着显隐（只有玻璃皮肤才有流体可调）
+  renderPerfTierUI();
+  /* 环境检测页的「显卡与渲染能力」卡里有一行是"流体背景（玻璃皮肤）"，
+     它的状态跟着当前皮肤变（普通皮肤下流体压根不建上下文 → 那时去看就是"未启用"）。
+     不重刷的话会出现：先看检测页（普通皮肤，显示降级）→ 再切玻璃皮肤 →
+     回检测页发现还写着"已降级为静态"，但背景明明在流动 —— 两边对不上，用户会以为坏了。
+     下一帧再刷一次是因为 setSkin → Fluid.start() 才把 ready 定下来，
+     同步读到的可能还是旧值。 */
+  if (typeof renderRenderCaps === "function") {
+    try { renderRenderCaps(); } catch (e) {}
+    setTimeout(() => { try { renderRenderCaps(); } catch (e) {} }, 120);
+  }
   // 记忆选择
-  if (window.api && window.api.set_skin) {
+  if (persist && window.api && window.api.set_skin) {
     try { window.api.set_skin(id); } catch (e) {}
   }
 }
 
+/* 主进程侧改了皮肤（如验证脚本、外部 IPC）时，把界面同步过来。
+   applySkin 本身只往一个方向走（改了界面 → 写配置），反向没有通道，
+   所以外部调 window.api.set_skin("xxx") 时界面不动、配置动了，两边会不一致。
+   这里包一层对外接口，让"改主进程配置"和"改界面"总是成对发生。 */
+function patchSkinApi() {
+  if (!window.api || !window.api.set_skin || window.api.__skinPatched) return;
+  const orig = window.api.set_skin.bind(window.api);
+  window.api.set_skin = (id) => {
+    applySkin(id, false);   // 界面先跟上（persist=false：下面自己写配置，别写两遍）
+    return orig(id);
+  };
+  window.api.__skinPatched = true;
+}
+
 /* 应用名下方显示版本号。
    version 由主进程 app.getVersion() 提供（读 package.json）；
-   取不到时（如浏览器里直接开 index.html 调试）留空，CSS 里 :empty 会隐藏，不占位。 */
+   取不到时（如浏览器里直接开 index.html 调试）留空，CSS 里 :empty 会隐藏，不占位。
+   注意：开发期直接跑源码时，app.getVersion() 返回的是 Electron 自身的版本（33.4.11），
+   不是我们的 2.15.0 —— 只有打包后才会是产品版本号。这里不额外兜底，
+   以免"显示的版本"和"config 里记的版本"两处来源不一致。 */
 function renderVersion(version) {
   const el = $("#app-version");
   if (!el) return;
   const v = String(version || "").trim();
   el.textContent = v ? "v" + v.replace(/^v/i, "") : "";
+}
+
+/* ============ 玻璃皮肤的性能档位（设置页） ============
+   为什么需要它：玻璃皮肤的背景是一层实时 WebGL 流体，老核显 / 远程桌面 / 笔记本
+   省电模式下会拖慢整个界面。给三档手动兜底，默认"自动"—— 自动档自己探测掉帧后降档，
+   不用用户去猜自己的机器行不行。
+
+   ⚠️ 档位只在玻璃皮肤下有意义，别的皮肤压根不画流体，所以那一行整个隐藏。 */
+let perfTier = "auto";
+
+const PERF_TIER_OPTS = [
+  { value: "auto", label: "自动", desc: "默认。跑得动就用标准画质，连续掉帧自动降到省电档。" },
+  { value: "high", label: "高质量", desc: "2 倍采样、30fps，独显或较新的核显用这档最好看。" },
+  { value: "low", label: "省电", desc: "1 倍采样、20fps，老电脑、远程桌面或想让笔记本省电时选它。" },
+];
+
+function isGlassSkin() {
+  return currentSkin === "dark-glass" || String(currentSkin).startsWith("glass-");
+}
+
+/* 把档位套用到流体渲染器上。渲染器不在（无 WebGL2）时静默跳过 ——
+   那种情况下流体压根没画，档位自然也无从谈起。 */
+function applyPerfTier(v) {
+  perfTier = v || "auto";
+  if (window.__fluid && window.__fluid.setTier) {
+    try { window.__fluid.setTier(perfTier); } catch (e) {}
+  }
+}
+
+function renderPerfTierUI() {
+  const block = $("#perf-tier-block");
+  if (!block) return;
+  // 非玻璃皮肤下整块隐藏，免得用户以为"这个档位管整个应用"
+  block.style.display = isGlassSkin() ? "" : "none";
+  if (!isGlassSkin()) return;
+
+  renderRadios("perf-opts", PERF_TIER_OPTS, perfTier, async (v) => {
+    applyPerfTier(v);
+    await callApi("save_perf_tier", v);
+    updatePerfTierHint();
+  });
+  updatePerfTierHint();
+}
+
+/* 档位下面那行小字。自动档降过档要说出来 —— 否则用户看到画面变简单了，
+   会以为是把档位设错了。 */
+function updatePerfTierHint() {
+  const hint = $("#perf-tier-hint");
+  if (!hint) return;
+  if (!window.__fluid || !window.__fluid.ready) {
+    hint.textContent = "当前设备不支持流体背景，已用静态渐变代替";
+    return;
+  }
+  const opt = PERF_TIER_OPTS.find((o) => o.value === perfTier);
+  if (perfTier === "auto" && window.__fluid.autoDowngraded) {
+    hint.textContent = "已自动降到省电档（检测到掉帧）";
+  } else {
+    hint.textContent = opt ? opt.desc : "";
+  }
 }
 
 function renderSkinGrid() {
@@ -41,15 +150,27 @@ function renderSkinGrid() {
   SKINS.forEach((s) => {
     const card = document.createElement("div");
     card.className = "skin-card" + (s.id === currentSkin ? " selected" : "");
-    card.innerHTML =
-      '<div class="skin-preview">' +
-        '<div class="sp-side" style="background:' + s.colors[0] + '"></div>' +
+    const isGlass = s.id === "dark-glass" || s.id.startsWith("glass-");
+    // 缩略图的色块顺序：左侧栏底色 → 主区卡片色 → 强调色小条。
+    // 缩略图只有 70px 高，画不了真的 backdrop blur，所以玻璃那几套用「底色打散的色团 + 亮色圆点」
+    // 来暗示"流体在动的玻璃"，比一块平色更能区分四套配色。
+    const preview = isGlass
+      ? '<div class="sp-side" style="background:' + s.colors[0] + '"></div>' +
+        '<div class="sp-main" style="background:' + s.colors[0] + '">' +
+          '<div style="position:absolute;inset:0;' +
+            'background:radial-gradient(60% 70% at 22% 30%,' + s.colors[1] + ' 0%,transparent 72%),' +
+            'radial-gradient(55% 60% at 82% 76%,' + s.colors[1] + '88 0%,transparent 74%)"></div>' +
+          '<div style="position:relative;height:14px;border-radius:5px;' +
+            'background:rgba(255,255,255,.16);backdrop-filter:blur(6px);margin-bottom:6px"></div>' +
+          '<div style="position:relative;height:4px;border-radius:2px;background:' + s.colors[2] + ';width:60%"></div>' +
+        '</div>'
+      : '<div class="sp-side" style="background:' + s.colors[0] + '"></div>' +
         '<div class="sp-main" style="background:' + s.colors[0] + '">' +
           '<div style="height:14px;border-radius:5px;background:' + s.colors[1] + ';margin-bottom:6px"></div>' +
           '<div style="height:8px;border-radius:4px;background:' + s.colors[2] + ';width:60%"></div>' +
-        '</div>' +
-      '</div>' +
-      '<div class="skin-name">' + s.name + '</div>';
+        '</div>';
+    card.innerHTML = '<div class="skin-preview">' + preview + '</div>' +
+                     '<div class="skin-name">' + s.name + '</div>';
     card.onclick = () => applySkin(s.id);
     grid.appendChild(card);
   });
@@ -58,7 +179,7 @@ function renderSkinGrid() {
 /* ============ 两个下载页：完全分开的队列 / 按钮 / 日志 ============
    油管与社媒各自一套 DOM（id 统一带 -yt / -social 后缀），互不干扰。
    主进程仍只有一个调度器（并行上限 3），任务靠 source 字段路由回各自的页面。 */
-const SOURCES = ["yt", "social"];
+const SOURCES = ["yt", "social", "direct"];
 
 const SOURCE_CONF = {
   yt: {
@@ -72,6 +193,12 @@ const SOURCE_CONF = {
     hint: "#social-url-hint",
     paste: "#social-btn-paste",
     empty: "支持批量：一行一个链接，也可用空格或逗号分隔；分享短链（如 v.douyin.com/…）直接贴即可",
+  },
+  direct: {
+    urlBox: "#direct-url",
+    hint: "#direct-url-hint",
+    paste: "#direct-btn-paste",
+    empty: "支持批量：一行一个链接，也可用空格或逗号分隔；必须是 http/https 开头的文件直链",
   },
 };
 
@@ -124,7 +251,6 @@ function bindEvents() {
       const r = await callApi("start_download", {
         urls: uniq.urls, dir: target.path,
         quality: isSocial ? "原画" : quality,
-        fps: isSocial ? "0" : fps,
         proxyMode,
         proxy: $("#proxy-addr").value.trim(),
         source: src,
@@ -220,6 +346,7 @@ function bindEvents() {
     b.disabled = false;
     if (comps) renderComponents(comps);
     renderPlaybackCaps();      // 播放能力跟着一起重检测
+    renderRenderCaps();        // 显卡与渲染能力同理
   };
 
   // 环境检测：一键安装（组件均随应用内置，这里给出说明与修复指引）
@@ -422,7 +549,7 @@ function bindImageEvents() {
   const pickOut = $("#img-pick-outdir");
   if (pickOut) {
     pickOut.onclick = async () => {
-      const p = await callApi("pick_folder", "选择输出文件夹");
+      const p = await callApi("pick_folder", "选择输出文件夹", "img_out");
       if (!p) return;
       imgOpts.outDir = p;
       $("#img-outdir").value = p;
@@ -564,6 +691,138 @@ function onImageDone(d) {
   }
 }
 
+/* ============ 下载封面图 ============ */
+const COVER_SRC = "cover";
+let coverJobId = null;
+
+function coverSetProgress(done, total) {
+  const wrap = $("#cover-progress-wrap");
+  const fill = $("#cover-progress-fill");
+  const pct = $("#cover-progress-percent");
+  const detail = $("#cover-progress-detail");
+  if (!wrap || !fill || !pct || !detail) return;
+  if (!total) { wrap.hidden = true; return; }
+  wrap.hidden = false;
+  const p = Math.max(0, Math.min(100, (done / total) * 100));
+  fill.style.width = p + "%";
+  pct.textContent = Math.round(p) + "%";
+  detail.textContent = done + " / " + total;
+}
+
+// 单个链接出结果。**每个结果往日志写一行 —— 日志本身就是结果列表**，
+// 不另建结果卡片（封面是一句话能说清的事，多一张卡反而啰嗦）。
+function onCoverItem(d) {
+  if (!d) return;
+  if (d.ok) {
+    appendLog("✓ " + (d.title || d.file || d.url), "ok", COVER_SRC);
+  } else if (d.nocover) {
+    appendLog("– 没有封面，已跳过：" + d.url.slice(0, 70), "dim", COVER_SRC);
+  } else {
+    appendLog("✗ " + d.url.slice(0, 70) + " —— " + (d.msg || "下载失败"), "err", COVER_SRC);
+  }
+  coverSetProgress(d.done || 0, d.total || 0);
+  const st = $("#cover-status");
+  if (st) st.textContent = "下载中 " + (d.done || 0) + " / " + (d.total || 0);
+}
+
+function onCoverDone(d) {
+  if (!d) return;
+  const st = $("#cover-status");
+  if (st) {
+    st.textContent = d.cancelled
+      ? "已停止"
+      : ("完成：成功 " + (d.okCount || 0) + " · 跳过 " + (d.skipCount || 0) + " · 失败 " + (d.failCount || 0));
+  }
+  coverSetProgress(d.total || 0, d.total || 0);
+  const start = $("#cover-start");
+  const stop = $("#cover-stop");
+  if (start) start.disabled = false;
+  if (stop) stop.disabled = true;
+  coverJobId = null;
+}
+
+function bindCoverEvents() {
+  // 选保存目录（选完立刻存配置，下次打开还在）
+  const pick = $("#cover-pick-dir");
+  if (pick) {
+    pick.onclick = async () => {
+      const dir = await callApi("pick_folder", "选择封面保存目录", "cover_out");
+      if (!dir) return;
+      const saved = await callApi("save_cover_dir", dir);
+      const input = $("#cover-dir");
+      if (input) input.value = saved || dir;
+    };
+  }
+
+  const openDir = $("#cover-open-dir");
+  if (openDir) {
+    openDir.onclick = async () => {
+      const input = $("#cover-dir");
+      const dir = input ? input.value.trim() : "";
+      if (!dir) { alert("还没选保存目录"); return; }
+      await callApi("open_folder", dir);
+    };
+  }
+
+  const paste = $("#cover-paste");
+  if (paste) {
+    paste.onclick = async () => {
+      const txt = await callApi("read_clipboard");
+      if (!txt) return;
+      const ta = $("#cover-urls");
+      if (!ta) return;
+      ta.value = (ta.value.trim() ? ta.value.replace(/\s+$/, "") + "\n" : "") + txt;
+    };
+  }
+
+  const start = $("#cover-start");
+  if (start) {
+    start.onclick = async () => {
+      const dirInput = $("#cover-dir");
+      const dir = dirInput ? dirInput.value.trim() : "";
+      const ta = $("#cover-urls");
+      const urls = ta ? ta.value : "";
+      if (!dir) { alert("请先选择封面保存目录"); return; }
+      if (!urls.trim()) { alert("请先粘贴至少一个视频链接"); return; }
+
+      const r = await callApi("start_cover_job", { dir, urls });
+      if (!r || !r.ok) { alert((r && r.msg) || "启动失败"); return; }
+      coverJobId = r.jobId;
+      start.disabled = true;
+      const stop = $("#cover-stop");
+      if (stop) stop.disabled = false;
+      coverSetProgress(0, r.total);
+      const st = $("#cover-status");
+      if (st) st.textContent = "下载中 0 / " + r.total;
+    };
+  }
+
+  const stop = $("#cover-stop");
+  if (stop) {
+    stop.onclick = async () => {
+      if (!coverJobId) return;
+      await callApi("stop_cover_job", coverJobId);
+      stop.disabled = true;
+    };
+  }
+
+  const clearLog = $("#cover-clear-log");
+  if (clearLog) {
+    clearLog.onclick = () => {
+      const l = el("log", COVER_SRC);
+      if (l) l.innerHTML = "";
+    };
+  }
+
+  const copyLog = $("#cover-copy-log");
+  if (copyLog) {
+    copyLog.onclick = async () => {
+      const l = el("log", COVER_SRC);
+      await callApi("copy_text", l ? l.textContent : "");
+    };
+  }
+}
+
 /* ============ 视频处理（无损修剪 / 压缩） ============ */
 let vidFiles = [];
 let vidTotalSize = 0;
@@ -575,7 +834,7 @@ let vidKeyInterval = 0;            // 平均关键帧间隔（秒），写在轨
 let vidCaps = null;                // ffmpeg 与硬件编码器可用性
 
 const vidOpts = {
-  mode: "trim",                    // trim | compress
+  mode: "trim",                    // trim | compress | merge
   quality: "中",
   encoder: "hevc_nv",
   maxHeight: 0,
@@ -660,6 +919,379 @@ function renderVidCount() {
   }
   el.textContent = `${vidFiles.length} 个视频` + (vidTotalSize ? ` · 合计 ${humanSize(vidTotalSize)}` : "");
   if (btn) btn.disabled = !!vidJob;
+}
+
+/* ===== 音视频拼接页（data-page="compose"） ===== */
+// 独立成一页的理由：这里的三个操作（纯拼接 / 换音乐 / 叠加音乐）都是
+// "多个输入 → 一个输出"，跟视频处理页"每个文件产一个"完全不是一个模型。
+const cmpOpts = {
+  audioMode: "keep",     // keep | replace | mix
+  music: "",
+  loopMusic: true,
+  fade: 2,
+  musicVol: 0.35,
+  allowConvert: false,
+  outMode: "same",
+  outDir: "",
+};
+let cmpFiles = [];
+let cmpInfos = new Map();     // 路径 → 探测信息（分辨率/时长/音轨/时间基）
+let cmpCompat = null;         // 最近一次兼容性判定
+let cmpMusicInfo = null;
+let cmpJob = null;
+
+function cmpBaseName(p) {
+  const s = String(p).replace(/\\/g, "/");
+  return s.slice(s.lastIndexOf("/") + 1);
+}
+
+function renderCmpCount() {
+  const el = $("#cmp-count");
+  if (el) el.textContent = cmpFiles.length ? `${cmpFiles.length} 个视频` : "尚未选择视频";
+  const start = $("#cmp-btn-start");
+  if (start) start.disabled = !!cmpJob || !cmpFiles.length;
+}
+
+// 顺序就是拼接顺序，所以列表必须可见、可调 —— 只显示"3 个视频"没法确认谁在前。
+function renderCmpList() {
+  const box = $("#cmp-list");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!cmpFiles.length) {
+    box.innerHTML = '<div class="card-sub" style="margin:0">还没有选择视频 —— 用上面的「添加视频」，或「选择文件夹」</div>';
+    return;
+  }
+  cmpFiles.forEach((f, i) => {
+    const info = cmpInfos.get(f);
+    const meta = info && info.width
+      ? `${info.width}×${info.height} · ${vidFmtTime(info.duration)}` +
+        (info.hasAudio ? ` · ${info.acodec}` : " · 无音轨")
+      : "…";
+    const row = document.createElement("div");
+    row.className = "img-row";
+    row.innerHTML =
+      '<span class="res-range" style="width:20px">' + (i + 1) + "</span>" +
+      '<span class="img-name" title="' + escapeAttr(f) + '">' + escapeHtml(cmpBaseName(f)) + "</span>" +
+      '<span class="img-size">' + escapeHtml(meta) + "</span>" +
+      '<button class="btn ghost" data-act="play" title="播放这个文件，确认素材对不对">▶</button>' +
+      '<button class="btn ghost" data-act="up">▲</button>' +
+      '<button class="btn ghost" data-act="down">▼</button>' +
+      '<button class="btn ghost" data-act="rm">✕</button>';
+    box.appendChild(row);
+
+    const rerender = () => { renderCmpList(); renderCmpCount(); refreshCmpCompat(); };
+    row.querySelector('[data-act="play"]').onclick = () => previewMedia(f);
+    const up = row.querySelector('[data-act="up"]');
+    const down = row.querySelector('[data-act="down"]');
+    up.disabled = i === 0;
+    down.disabled = i === cmpFiles.length - 1;
+    const swap = (j) => { const t = cmpFiles[i]; cmpFiles[i] = cmpFiles[j]; cmpFiles[j] = t; rerender(); };
+    up.onclick = () => { if (i > 0) swap(i - 1); };
+    down.onclick = () => { if (i < cmpFiles.length - 1) swap(i + 1); };
+    row.querySelector('[data-act="rm"]').onclick = () => { cmpFiles.splice(i, 1); rerender(); };
+  });
+}
+
+function addCmpFiles(files) {
+  if (!Array.isArray(files) || !files.length) return;
+  const seen = new Set(cmpFiles);
+  for (const f of files) if (!seen.has(f)) { cmpFiles.push(f); seen.add(f); }
+  renderCmpList(); renderCmpCount(); refreshCmpCompat();
+}
+
+// 播放素材做确认。走 preview_file —— 它优先甩给 PotPlayer/VLC/MPV，
+// 因为 4K HEVC 交给系统默认播放器很可能根本放不出来。
+async function previewMedia(p) {
+  if (!p) return;
+  const r = await callApi("preview_file", p);
+  if (r && !r.ok) alert("打不开：" + (r.msg || "未知原因"));
+}
+
+// 判定权在后端（只有它读得到像素格式 / 时间基 / 音轨）。前端只负责把原因原样显示，
+// 以及告诉用户"勾了自动转码会转哪几段" —— 不让前端猜，猜错用户会照着错结论去改文件。
+async function refreshCmpCompat() {
+  const el = $("#cmp-compat");
+  if (!el) return;
+  cmpCompat = null;
+  if (!cmpFiles.length) { el.textContent = ""; return; }
+  if (cmpFiles.length === 1) {
+    el.textContent = cmpOpts.audioMode === "keep"
+      ? "只有 1 个视频 —— 要么再加一个一起拼，要么在下面选个音轨处理方式"
+      : "";
+    return;
+  }
+  el.textContent = "正在检查…";
+  const r = await callApi("probe_merge_files", cmpFiles, { audioMode: cmpOpts.audioMode });
+  if (!r || !r.ok) { el.textContent = "检查失败"; return; }
+  cmpInfos = new Map();
+  for (const inf of r.infos || []) if (inf && inf.file) cmpInfos.set(inf.file, inf);
+  cmpCompat = r.compat;
+  renderCmpList();
+  if (cmpCompat && cmpCompat.ok) {
+    const differ = cmpCompat.tbnSet && cmpCompat.tbnSet.length > 1;
+    el.textContent = `✓ 可以无损合并 · 合计 ${vidFmtTime(cmpCompat.totalSec)}` +
+      (differ ? "（时间基不同，会自动对齐）" : "");
+  } else {
+    let txt = "✕ 不能无损合并：" + ((cmpCompat && cmpCompat.problems) || []).join("；");
+    if (r.convert && r.convert.idx && r.convert.idx.length) {
+      const tg = r.convert.target;
+      txt += `\n勾上「自动转码不匹配的片段」的话，只会转第 ${r.convert.idx.map((i) => i + 1).join("、")} 段` +
+        `（统一到 ${tg.vcodec} ${tg.width}×${tg.height}），其余段仍然无损拷贝`;
+    }
+    el.textContent = txt;
+  }
+}
+
+function renderCmpAudioUI() {
+  const mode = cmpOpts.audioMode;
+  const withMusic = mode !== "keep";
+  const row = $("#cmp-music-row");
+  const tweaks = $("#cmp-music-tweaks");
+  if (row) row.hidden = !withMusic;
+  if (tweaks) tweaks.hidden = !withMusic;
+  // 音量只对「叠加」有意义：换/加音乐时音乐就是唯一音轨，不存在"调小"这回事
+  const showVol = mode === "mix";
+  for (const id of ["cmp-vol-label", "cmp-vol", "cmp-vol-text"]) {
+    const el = $("#" + id);
+    if (el) el.hidden = !showVol;
+  }
+  const hint = $("#cmp-audio-hint");
+  if (hint) {
+    hint.textContent = mode === "keep"
+      ? "原样保留每段自己的音轨（纯拼接）。"
+      : (mode === "add"
+        ? "给没有声音的视频加一条背景音乐。如果视频本来就有原声，会被丢掉 —— 想保留原声请选「叠加音乐」。视频不重新编码，画质一点不变。"
+        : (mode === "replace"
+          ? "丢掉原视频里所有声音，只保留你选的音乐。视频不重新编码，画质一点不变。"
+          : "保留原声（旁白），再叠加一条音乐；音乐音量可以在右边调小。视频不重新编码。"));
+  }
+}
+
+async function pickCmpMusic() {
+  const r = await callApi("pick_audio");
+  if (!r || !r.ok || !r.file) return;
+  cmpOpts.music = r.file;
+  saveCmpOpts();
+  const box = $("#cmp-music");
+  if (box) box.value = r.file;
+  const playBtn = $("#cmp-play-music");
+  if (playBtn) playBtn.disabled = false;
+  const info = $("#cmp-music-info");
+  if (info) info.textContent = "读取音乐信息…";
+  const p = await callApi("probe_audio", r.file);
+  cmpMusicInfo = (p && p.ok) ? p.info : null;
+  if (info) {
+    info.textContent = cmpMusicInfo
+      ? `${cmpBaseName(r.file)} · ${cmpMusicInfo.acodec}` +
+        (cmpMusicInfo.audioRate ? ` · ${cmpMusicInfo.audioRate}Hz` : "") +
+        ` · ${vidFmtTime(cmpMusicInfo.duration)}`
+      : ((p && p.msg) || "这个文件读不出音频信息");
+  }
+}
+
+function saveCmpOpts() {
+  try { localStorage.setItem("fa.composeOpts", JSON.stringify(cmpOpts)); } catch (e) { /* 忽略 */ }
+}
+function loadCmpOpts() {
+  try {
+    const s = localStorage.getItem("fa.composeOpts");
+    if (s) Object.assign(cmpOpts, JSON.parse(s) || {});
+  } catch (e) { /* 忽略 */ }
+}
+
+function updateCmpProgress(detail, percent) {
+  const wrap = $("#cmp-progress-wrap");
+  const fill = $("#cmp-progress-fill");
+  const pct = $("#cmp-progress-percent");
+  const det = $("#cmp-progress-detail");
+  if (!wrap || !fill || !pct || !det) return;
+  const p = Math.max(0, Math.min(100, Number(percent) || 0));
+  wrap.hidden = false;
+  fill.style.width = p + "%";
+  pct.textContent = Math.round(p) + "%";
+  det.textContent = detail || "";
+}
+
+function cmpSetBusy(on) {
+  cmpJob = on ? (cmpJob || { id: "" }) : null;
+  const start = $("#cmp-btn-start");
+  const stop = $("#cmp-stop");
+  if (start) start.disabled = !!on || !cmpFiles.length;
+  if (stop) stop.disabled = !on;
+}
+
+async function startCmp() {
+  if (!cmpFiles.length) { alert("请先选择视频"); return; }
+  if (cmpOpts.audioMode !== "keep" && !cmpOpts.music) { alert("请先选择音乐文件"); return; }
+  if (cmpFiles.length === 1 && cmpOpts.audioMode === "keep") {
+    alert("只选了一个视频、也没选音乐，没什么要处理的");
+    return;
+  }
+  if (cmpCompat && !cmpCompat.ok && !cmpOpts.allowConvert) {
+    alert("这些视频不能无损合并：\n\n" + (cmpCompat.problems || []).join("\n") +
+      "\n\n要么换成参数一致的视频，要么勾上「自动转码不匹配的片段」。");
+    return;
+  }
+  if (cmpOpts.outMode === "custom" && !cmpOpts.outDir) { alert("请先选择输出文件夹"); return; }
+  saveCmpOpts();
+
+  const box = $("#cmp-result-list"); if (box) box.innerHTML = "";
+  const card = $("#cmp-result-card"); if (card) card.hidden = true;
+  cmpSetBusy(true);
+  updateCmpProgress("准备中…", 0);
+  const st = $("#cmp-status"); if (st) st.textContent = "处理中…";
+
+  const r = await callApi("start_compose_job", {
+    files: cmpFiles,
+    audioMode: cmpOpts.audioMode,
+    music: cmpOpts.music,
+    loopMusic: cmpOpts.loopMusic !== false,
+    fade: cmpOpts.fade,
+    musicVol: cmpOpts.musicVol,
+    allowConvert: !!cmpOpts.allowConvert,
+    outMode: cmpOpts.outMode,
+    outDir: cmpOpts.outDir,
+  });
+  if (!r || !r.ok) {
+    cmpSetBusy(false);
+    if (st) st.textContent = "就绪";
+    alert("启动失败：" + ((r && r.msg) || "未知错误"));
+    return;
+  }
+  cmpJob = { id: r.jobId };
+}
+
+function onComposeProgress(d) {
+  if (!d) return;
+  updateCmpProgress(d.detail, d.percent);
+}
+
+function onComposeItem(d) {
+  if (!d) return;
+  const card = $("#cmp-result-card"); if (card) card.hidden = false;
+  const box = $("#cmp-result-list");
+  if (box) {
+    const row = document.createElement("div");
+    row.className = "img-row " + (d.ok ? "done" : "error");
+    const tip = d.msg || d.outPath || "";
+    row.innerHTML =
+      '<span class="img-name" title="' + escapeAttr(tip) + '">' + escapeHtml(d.name || "") + "</span>" +
+      '<span class="img-size">' +
+      escapeHtml(d.ok ? `${humanSize(d.before || 0)} → ${humanSize(d.after || 0)}` : "失败") + "</span>";
+    box.appendChild(row);
+    box.scrollTop = box.scrollHeight;
+  }
+  const sum = $("#cmp-summary");
+  if (sum) {
+    sum.textContent = d.ok
+      ? `成功 · ${humanSize(d.before || 0)} → ${humanSize(d.after || 0)}（无损，体积差就是音轨）`
+      : ("失败：" + (d.msg || ""));
+  }
+}
+
+function onComposeDone(d) {
+  cmpSetBusy(false);
+  const st = $("#cmp-status");
+  if (st) {
+    if (!d) st.textContent = "就绪";
+    else if (d.cancelled) st.textContent = "已中止";
+    else st.textContent = d.errCount ? "失败" : "完成";
+  }
+  const openOut = $("#cmp-open-out");
+  if (openOut) openOut.disabled = false;
+  cmpJob = null;
+}
+
+function initComposePage() {
+  loadCmpOpts();
+
+  renderRadios("cmp-audio-opts", [
+    { value: "keep", label: "保留原样" },
+    { value: "add", label: "添加背景音乐" },
+    { value: "replace", label: "去掉原声，换成我的音乐" },
+    { value: "mix", label: "保留原声，叠加音乐" },
+  ], cmpOpts.audioMode, (v) => {
+    cmpOpts.audioMode = v; saveCmpOpts(); renderCmpAudioUI(); refreshCmpCompat();
+  });
+
+  renderRadios("cmp-out-opts", [
+    { value: "same", label: "和源视频放一起" },
+    { value: "custom", label: "指定文件夹" },
+  ], cmpOpts.outMode, (v) => {
+    cmpOpts.outMode = v; saveCmpOpts();
+    const row = $("#cmp-outdir-row");
+    if (row) row.hidden = v !== "custom";
+  });
+  const orow = $("#cmp-outdir-row");
+  if (orow) orow.hidden = cmpOpts.outMode !== "custom";
+  if (cmpOpts.outDir) $("#cmp-outdir").value = cmpOpts.outDir;
+  if (cmpOpts.music) $("#cmp-music").value = cmpOpts.music;
+  const playMusic = $("#cmp-play-music");
+  if (playMusic) {
+    playMusic.disabled = !cmpOpts.music;
+    playMusic.onclick = () => previewMedia(cmpOpts.music);
+  }
+
+  const loop = $("#cmp-loop");
+  if (loop) { loop.checked = cmpOpts.loopMusic !== false; loop.onchange = () => { cmpOpts.loopMusic = loop.checked; saveCmpOpts(); }; }
+  const fade = $("#cmp-fade");
+  if (fade) { fade.checked = (Number(cmpOpts.fade) || 0) > 0; fade.onchange = () => { cmpOpts.fade = fade.checked ? 2 : 0; saveCmpOpts(); }; }
+  const vol = $("#cmp-vol");
+  const volText = $("#cmp-vol-text");
+  if (vol) {
+    vol.value = String(Math.round((cmpOpts.musicVol || 0.35) * 100));
+    if (volText) volText.textContent = vol.value + "%";
+    vol.oninput = () => {
+      cmpOpts.musicVol = (Number(vol.value) || 35) / 100;
+      if (volText) volText.textContent = vol.value + "%";
+      saveCmpOpts();
+    };
+  }
+  const conv = $("#cmp-convert");
+  if (conv) { conv.checked = !!cmpOpts.allowConvert; conv.onchange = () => { cmpOpts.allowConvert = conv.checked; saveCmpOpts(); }; }
+
+  const pick = $("#cmp-pick-files");
+  if (pick) pick.onclick = async () => { const r = await callApi("pick_videos"); if (r && r.ok) addCmpFiles(r.files); };
+  const pickDir = $("#cmp-pick-dir");
+  if (pickDir) pickDir.onclick = async () => { const r = await callApi("collect_videos", true); if (r && r.ok) addCmpFiles(r.files); };
+  const clear = $("#cmp-clear");
+  if (clear) clear.onclick = () => {
+    cmpFiles = []; cmpInfos = new Map(); cmpCompat = null;
+    renderCmpList(); renderCmpCount(); refreshCmpCompat();
+  };
+  const pickMusic = $("#cmp-pick-music");
+  if (pickMusic) pickMusic.onclick = pickCmpMusic;
+
+  const pickOut = $("#cmp-pick-outdir");
+  if (pickOut) pickOut.onclick = async () => {
+    const p = await callApi("pick_folder", "选择输出文件夹", "compose_out");
+    if (!p) return;
+    cmpOpts.outDir = p;
+    $("#cmp-outdir").value = p;
+    saveCmpOpts();
+  };
+
+  const start = $("#cmp-btn-start");
+  if (start) start.onclick = startCmp;
+  const stop = $("#cmp-stop");
+  if (stop) stop.onclick = async () => { if (cmpJob) await callApi("stop_video_job", cmpJob.id); };
+  const openOut = $("#cmp-open-out");
+  if (openOut) openOut.onclick = async () => {
+    const d = (cmpOpts.outMode === "custom" && cmpOpts.outDir) ? cmpOpts.outDir
+      : (cmpFiles.length ? String(cmpFiles[0]).replace(/[\\/][^\\/]*$/, "") : "");
+    if (!d) return;
+    const r = await callApi("open_folder", d);
+    if (r && !r.ok) alert("打开失败：" + (r.msg || ""));
+  };
+  const clearResult = $("#cmp-clear-result");
+  if (clearResult) clearResult.onclick = () => {
+    const box = $("#cmp-result-list"); if (box) box.innerHTML = "";
+    const card = $("#cmp-result-card"); if (card) card.hidden = true;
+  };
+
+  renderCmpAudioUI();
+  renderCmpList();
+  renderCmpCount();
 }
 
 // 读首个视频的信息：时长、分辨率、编码，以及关键帧间隔（决定无损修剪的精度）
@@ -1351,7 +1983,7 @@ function bindVideoEvents() {
   const pickOut = $("#vid-pick-outdir");
   if (pickOut) {
     pickOut.onclick = async () => {
-      const p = await callApi("pick_folder", "选择输出文件夹");
+      const p = await callApi("pick_folder", "选择输出文件夹", "video_out");
       if (!p) return;
       vidOpts.outDir = p;
       $("#vid-outdir").value = p;
@@ -1469,6 +2101,59 @@ function onVideoDone(d) {
   }
 }
 
+/* ============ 下载后转 30 帧 ============ */
+// 队列行里的「降为30fps」按钮。用 60→30 的纯抽帧，分辨率不动，输出新文件（xxx_30fps.<原容器>）。
+// 进度走 'fps-progress'（单独一条通道，别和视频处理页的进度条串），转完由 fps-done 收尾。
+//
+// ⚠️ 进度状态必须存在这里的变量里，**不能只写在按钮 DOM 上**。
+// 队列一旦变化（比如又加了一个下载任务）就会 renderTasks() 整行重建，
+// 新按钮既没有"转帧中"的文本、也不再是 disabled；而进度回调当年是靠
+// `if (b.disabled)` 去找按钮的 → 重建之后就再也匹配不上，百分比永远不显示。
+// 实测症状：「下载完第一个、第二个入队后再点降帧，百分比有概率不显示」，就是这个原因。
+let fpsConverting = false;   // 同一时间只允许转一个，避免 ffmpeg 抢 GPU
+let fpsJob = null;           // { file, percent } —— 正在转的那一个（跨重建保留）
+
+function fpsBtnText(file) {
+  if (fpsJob && file && file === fpsJob.file) {
+    return "转帧中 " + Math.round(fpsJob.percent || 0) + "%";
+  }
+  return "降为30fps";
+}
+
+// 只改"那一个文件"的按钮，不重建列表（进度每 0.4% 就推一次，重建太浪费）
+function patchFpsButton(file, percent) {
+  document.querySelectorAll('[data-act="fps30"]').forEach((b) => {
+    if (b.dataset.file && b.dataset.file === file) {
+      b.textContent = "转帧中 " + Math.round(percent || 0) + "%";
+      b.disabled = true;
+    }
+  });
+}
+
+async function startFpsConvert(t, btn) {
+  if (fpsConverting) { alert("已经有一个转帧任务在跑了，等它结束再点。"); return; }
+  const file = t.file;
+  if (!file) return;
+  // window.__faNoConfirm 只给自检脚本用（测试里 confirm 会阻塞渲染进程）
+  if (!window.__faNoConfirm && !confirm("将把该视频转为 30fps（分辨率不变，输出新文件），继续？")) return;
+
+  fpsConverting = true;
+  fpsJob = { file, percent: 0 };
+  if (btn) { btn.textContent = "转帧中 0%"; btn.disabled = true; }
+  try {
+    const r = await callApi("convert_fps30", file);
+    if (!r || !r.ok) {
+      alert("转换失败：" + ((r && r.msg) || "未知错误"));
+    }
+    // 成功不用在这里改按钮 —— 主进程会推 fps-done
+  } finally {
+    fpsConverting = false;
+    fpsJob = null;
+    // 统一由重渲染收尾：成了会显示「播放30帧版」，失败/本来就是30帧就还原成「降为30fps」
+    renderTasks(t.source || "yt");
+  }
+}
+
 /* ============ 属性弹窗渲染 ============ */
 // 读取文件属性并弹出（底栏按钮与队列行的「属性」按钮共用）
 async function probeAndShow(file, btn) {
@@ -1571,7 +2256,7 @@ async function refreshProxyHint() {
 /* ============ 日志 ============ */
 // 每个页面有自己的日志框。带 source 的只进对应页面；
 // 不带 source 的全局提示（极少）所有页面各写一份，保证在哪个页面都能看到。
-const LOG_SOURCES = ["yt", "social", "img", "video"];
+const LOG_SOURCES = ["yt", "social", "direct", "img", "cover", "video", "compose"];
 
 function appendLog(text, cls, src) {
   (src ? [src] : LOG_SOURCES).forEach((s) => {
@@ -1601,7 +2286,7 @@ function parseUrls(raw, source) {
     // 从一段文字里抠出 URL（应对"看看这个 https://youtu.be/xxx 好好看"这类粘贴）
     const m = p.match(/https?:\/\/[^\s"'<>）)]+/g);
     if (m) out.push(...m.map(cleanUrl));
-    else if (source !== "social" && /^[\w-]{6,}$/.test(p) && p.length >= 8) {
+    else if (source === "yt" && /^[\w-]{6,}$/.test(p) && p.length >= 8) {
       // 纯视频 ID（用户有时只贴 ID）—— 仅油管页适用
       out.push("https://www.youtube.com/watch?v=" + p);
     }
@@ -1658,8 +2343,8 @@ function updateUrlHint(source) {
 
 /* ============ 分类目录 ============ */
 // 油管与社媒各有一套分类，互不影响：dirs[src] + selectedDir[src]。
-const dirs = { yt: [], social: [] };
-const selectedDir = { yt: 0, social: 0 };
+const dirs = { yt: [], social: [], direct: [] };
+const selectedDir = { yt: 0, social: 0, direct: 0 };
 
 function currentDir(src) {
   const list = dirs[src] || [];
@@ -1699,11 +2384,11 @@ function renderDirs(src) {
         saveDirs();
       };
     });
-    // 浏览
+    // 浏览（每个分类各记自己的路径：油管的 4K 目录和社媒目录通常是两个地方）
     box.querySelectorAll('button[data-f="browse"]').forEach((b) => {
       b.onclick = async () => {
         const i = +b.dataset.i;
-        const p = await callApi("pick_folder");
+        const p = await callApi("pick_folder", "选择下载目录", "dl_" + s + "_" + i);
         if (p) { dirs[s][i].path = p; saveDirs(); renderDirs(s); }
       };
     });
@@ -1735,6 +2420,80 @@ function renderComponents(comps) {
       '<div class="comp-desc">' + c.desc + "</div>";
     box.appendChild(row);
   });
+
+  /* 「一键安装缺失组件」按钮只在**真有缺失**时才出现。
+     组件都随安装包内置（resources\tools），正常情况全就绪 ——
+     这种时候还挂一个"一键安装缺失组件"的按钮，用户会以为"我这缺东西、得装点什么"，
+     纯属误导（跟之前"已降级为静态"那类误报同一个毛病：把正常状态说成需要操作）。
+     顺带把按钮文案定成"缺失"口径，真出现时它才是对的。 */
+  const btn = $("#btn-install");
+  if (btn) {
+    const missing = (comps || []).filter((c) => !c.ok);
+    btn.hidden = missing.length === 0;
+  }
+}
+
+/* ===== 设置页：手动指定外部播放器路径 =====
+   为什么需要这个：自动找播放器有三条路（注册表 App Paths / 标准路径扫描 / 系统默认），
+   但有机器会全都落空 —— 典型是安全软件拦了 reg.exe（注册表那条断掉），
+   而播放器又装在扫不到的目录里。这时给用户一个"我自己指"的入口，
+   是唯一能真正兜住的方案（比继续猜路径可靠得多）。
+   改完即存到 config.external_player；主进程会把缓存清掉，下次检测就用新值。 */
+function bindPlayerPath() {
+  const input = $("#player-path");
+  const hint = $("#player-hint");
+  if (!input) return;
+
+  function say(msg, ok) {
+    if (!hint) return;
+    hint.textContent = msg || "";
+    hint.style.color = ok === false ? "var(--danger, #f34e52)" : "";
+  }
+
+  async function save(v) {
+    await callApi("set_external_player", v || "");
+    renderPlaybackCaps();      // 检测页的"外部播放器兜底"跟着变
+    if (!v) { say("已清空，改为自动查找。"); return; }
+    // 存完立刻回读一次，让用户马上知道这个路径认不认得出来
+    const caps = await loadPlaybackCaps(true);
+    if (caps && caps.external && caps.external.via === "manual") {
+      if (caps.external.exists === false) say("已保存，但这个文件现在找不到，请确认路径是否正确。", false);
+      else say("已保存 ✓ 放不出来的视频会交给 " + caps.external.name + " 打开。");
+    } else {
+      say("已保存 ✓");
+    }
+  }
+
+  // 回显当前配置
+  (async () => {
+    const caps = await loadPlaybackCaps();
+    if (caps && caps.manualPath) { input.value = caps.manualPath; await save(caps.manualPath); }
+    else if (caps && caps.external) {
+      say("当前自动找到：" + caps.external.name + "（" + caps.external.path + "）。想指定别的播放器就在上面填路径。");
+    } else {
+      say("现在是自动查找。如果找不到你装的播放器，点「浏览…」指一下它的 exe 就行。");
+    }
+  })();
+
+  input.addEventListener("change", () => save(input.value.trim()));
+
+  const pick = $("#btn-pick-player");
+  if (pick) {
+    pick.onclick = async () => {
+      const p = await callApi("pick_external_player");
+      if (!p) return;               // 用户取消
+      input.value = p;
+      await save(p);
+    };
+  }
+
+  const clear = $("#btn-clear-player");
+  if (clear) {
+    clear.onclick = async () => {
+      input.value = "";
+      await save("");
+    };
+  }
 }
 
 /* 环境检测：视频播放能力。
@@ -1757,13 +2516,28 @@ async function renderPlaybackCaps() {
     },
     {
       name: "外部播放器兜底",
-      ok: !!caps.external,
-      status: caps.external ? caps.external.name : "系统默认",
-      desc: caps.external
-        ? ("已检测到 " + caps.external.name + "（自带解码器，不依赖系统组件），应用内放不出来的视频会交给它打开。")
-        : ("没检测到 PotPlayer / VLC / MPV，放不出来时会交给系统默认播放器。注意 Windows 自带的播放器同样依赖" +
-           "系统的 HEVC 解码组件 —— 如果它也放不了，装一个 VLC 或 PotPlayer 就能看（它们自带解码器）。" +
-           (caps.regBlocked ? "（注：本次注册表查询被系统安全策略拦截，检测结果可能不全）" : "")),
+      ok: !!caps.external && caps.external.exists !== false,
+      status: caps.external
+        ? (caps.external.via === "manual" ? caps.external.name + "（手动指定）" : caps.external.name)
+        : "系统默认",
+      desc: (() => {
+        // 手动指定了但文件不在 → 多半是路径填错 / 移动盘没插，要说清楚
+        if (caps.external && caps.external.via === "manual" && caps.external.exists === false) {
+          return "已手动指定 " + caps.external.path + "，但**这个文件现在找不到**（路径可能填错了，或所在磁盘没挂载）。" +
+                 "可以到「设置 → 视频播放」重新选一个。";
+        }
+        if (caps.external) {
+          return "已检测到 " + caps.external.name + "（自带解码器，不依赖系统组件），应用内放不出来的视频会交给它打开。"
+            + (caps.external.via === "manual" ? "路径：" + caps.external.path : "");
+        }
+        // 自动没找到时的引导。**不显示"注册表被拦截"这类内部细节** ——
+        // 那是安全软件拦了命令，属用户环境的事，摊出来只会让人以为"我电脑有问题"，
+        // 而且对解决问题没帮助。真正有用的信息是"你可以手动指一个"。
+        return "没自动检测到 PotPlayer / VLC / MPV，放不出来时会交给系统默认播放器。" +
+               "注意 Windows 自带的播放器同样依赖系统的 HEVC 解码组件 —— 如果它也放不了，" +
+               "装一个 VLC 或 PotPlayer 就能看（它们自带解码器）。" +
+               "已经装了却没被认出来？到「设置 → 视频播放」手动指定一下程序路径即可。";
+      })(),
     },
   ];
   box.innerHTML = rows.map((c) => (
@@ -1777,7 +2551,124 @@ async function renderPlaybackCaps() {
   )).join("");
 }
 
+/* 环境检测：显卡与渲染能力。
+   回答"我这台机器跑玻璃皮肤行不行" —— 用户会问的另一半是"为什么我这台画得比别人简单"，
+   所以除了显卡是谁，还要把降级原因（无 WebGL2 / 自动降档 / 关了硬件加速）明确写出来。 */
+async function renderRenderCaps() {
+  const box = $("#render-list");
+  if (!box) return;
+  const caps = await callApi("get_render_caps");
+
+  // 页内直接探一次 WebGL2：主进程的 getGPUFeatureStatus 报的是 Chromium 通道状态，
+  // 而"能不能真的建出 WebGL2 上下文"只有渲染进程答得准。两边都看才不误判。
+  let gl2 = false, glInfo = "", glErr = "";
+  try {
+    const c = document.createElement("canvas");
+    const gl = c.getContext("webgl2");
+    if (gl) {
+      gl2 = true;
+      const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+      glInfo = dbg ? (gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || "") : (gl.getParameter(gl.RENDERER) || "");
+    }
+  } catch (e) { glErr = String((e && e.message) || e); }
+
+  const fluidReady = !!(window.__fluid && window.__fluid.ready);
+  const tier = (window.__fluid && window.__fluid.tier) || (caps && caps.perfTier) || "auto";
+  const downgraded = !!(window.__fluid && window.__fluid.autoDowngraded);
+  const tierName = { high: "高质量", auto: "自动", low: "省电" }[tier] || tier;
+
+  // 显卡名字：优先取渲染进程探到的（那才是真正在画的那块），拿不到再退回主进程
+  let gpuName = glInfo || (caps && caps.auxAttributes) || "";
+  if (!gpuName && caps && caps.devices && caps.devices.length) {
+    const d = caps.devices[0];
+    gpuName = [d.vendor, d.device].filter(Boolean).join(" ");
+  }
+
+  const rows = [];
+
+  rows.push({
+    name: "显卡",
+    ok: !!gpuName,
+    status: gpuName ? "已识别" : "未识别",
+    desc: gpuName
+      ? (gpuName + "。玻璃皮肤的背景流体由它绘制。")
+      : "没能读到显卡名称，不影响下载与视频处理。",
+  });
+
+  rows.push({
+    name: "流体背景（玻璃皮肤）",
+    ok: fluidReady,
+    /* 状态文案要分三种情况，别混成两种 —— 混了就会出这种乌龙：
+       用户当前用的是普通皮肤（根本不画流体，这是**正常且省电**的），
+       卡片却写"已降级为静态"，看起来像这台机器有问题。 */
+    status: isGlassSkin()
+      ? (fluidReady ? (downgraded ? "已降档运行" : "正常") : "已降级为静态")
+      : "当前皮肤未启用",
+    desc: !isGlassSkin()
+      ? ("当前用的是「" + (SKINS.find((s) => s.id === currentSkin) || {}).name + "」，" +
+         "这套皮肤不画流体背景（省电），所以无需启动。换到玻璃皮肤的任一套，这里会实时显示它的运行状态。" +
+         (gl2 ? "" : "另外，这台机器的 WebGL2 不可用，届时会自动用静态渐变代替。"))
+      : fluidReady
+        ? (downgraded
+            ? ("当前档位：" + tierName + "。检测到这台机器画起来掉帧，已自动按省电参数绘制 —— 外观基本不变，" +
+               "只是刷新率低一些，界面更跟手。想固定档位可到「设置 → 主题皮肤 → 性能档位」手动指定。")
+            : ("当前档位：" + tierName + "，背景是一层实时流体，鼠标划过会搅动它。" +
+               "如果觉得界面不够跟手，可到「设置 → 主题皮肤 → 性能档位」调低。"))
+        : (gl2
+            ? "这台机器的 WebGL2 可用，但流体背景没能启动，已用静态渐变代替。功能不受影响。" +
+              "可到「设置 → 主题皮肤」重新选一次玻璃皮肤，或点下方「重新检测」再看。"
+            : ("这台机器不支持 WebGL2" + (glErr ? "（" + glErr + "）" : "") +
+               "，玻璃皮肤的背景已自动换成静态渐变 —— 面板的毛玻璃质感照旧，只是背景不会流动。")),
+  });
+
+  // 启动档位只有非标准时才值得提，标准模式下提一句就是噪音
+  const lvl = caps ? (caps.compatLevel | 0) : 0;
+  const LVL_DESC = [
+    "标准模式，未做任何兼容性调整。",
+    "已启用 no-sandbox（渲染进程曾经被杀导致窗口空白）。",
+    "已启用 no-sandbox + 单进程 GPU（GPU 子进程曾经起不来导致窗口不显示）。",
+    "已关闭硬件加速（GPU 整体不稳定）。代价是视频预览可能放不出 HEVC，此时请用外部播放器看。",
+  ];
+  rows.push({
+    name: "启动兼容模式",
+    ok: lvl === 0,
+    status: lvl === 0 ? "标准" : ("等级 " + lvl),
+    desc: LVL_DESC[lvl] || LVL_DESC[0],
+  });
+
+  box.innerHTML = rows.map((c) => (
+    '<div class="comp-row">' +
+      '<div class="comp-head">' +
+        '<span class="comp-name">' + c.name + "</span>" +
+        '<span class="comp-status ' + (c.ok ? "ok" : "busy") + '">' + c.status + "</span>" +
+      "</div>" +
+      '<div class="comp-desc">' + c.desc + "</div>" +
+    "</div>"
+  )).join("");
+
+  /* 页脚那行汇总提示。
+     ⚠️ 这行以前是个空壳（HTML 里留了 #env-hint，但没有任何代码给它写内容），
+     从 Electron 版重写起就一直空白，用户看不出"整体到底正常不正常"。
+     现在按三张卡的实际结果生成一句判断，让人扫一眼就知道要不要管。 */
+  const hint = $("#env-hint");
+  if (hint) {
+    const fluidOk = fluidReady || !isGlassSkin();   // 普通皮肤下不算"不达标"
+    const parts = [];
+    parts.push(gl2
+      ? "显卡与 WebGL2 正常"
+      : "这台机器没有 WebGL2（玻璃皮肤会自动改用静态渐变，功能不受影响）");
+    if (isGlassSkin()) parts.push(fluidOk ? "流体背景运行中" : "流体背景已退回静态渐变");
+    parts.push(lvl > 0
+      ? ("启动兼容模式已自动升到等级 " + lvl + "，说明这台机器有过启动异常、已被自动兜住，不用管")
+      : "启动走标准模式");
+    hint.textContent = parts.join("；") + "。组件全部随应用内置，正常情况无需手动安装。";
+  }
+}
+
 /* ============ API 封装（Electron 桥接 window.api） ============ */
+/* 调主进程接口。**接口名写错时这里会静默返回 null**（鸭子判断不通过），
+   曾因此让"性能档位点了不保存"这种 bug 藏了很久 —— 所以名字对不上时吼一声，
+   别让它悄悄过去。真正的调用失败（主进程抛错）仍按原样返回 null，由调用方兜。 */
 function callApi(method, ...args) {
   if (window.api && window.api[method]) {
     try {
@@ -1786,12 +2677,14 @@ function callApi(method, ...args) {
       return Promise.resolve(null);
     }
   }
+  if (window.api && !window.api[method]) {
+    console.warn("[api] preload 上没有这个方法：" + method + "（接口名拼错？）");
+  }
   return Promise.resolve(null);
 }
 
 /* ============ 下载 ============ */
 let quality = "4K";
-let fps = "0";
 let proxyMode = "system";
 let cookiesBrowser = "firefox";
 
@@ -1937,10 +2830,22 @@ function renderTasks(src) {
         (t.state === "done" && t.file
           ? '<button class="btn ghost" data-act="play">播放</button>' +
             '<button class="btn ghost" data-act="props">属性</button>' +
-            '<button class="btn ghost" data-act="dir">目录</button>'
+            '<button class="btn ghost" data-act="dir">目录</button>' +
+            // 「降为30fps」只在真帧率>30 时出现 —— 30fps 及以下的视频不给这个按钮，
+            // 免得手滑点了把 30 帧又砍半。已转过的话按钮变「播放30帧版」，点了打开产物。
+            (t.fpsOut
+              ? '<button class="btn ghost" data-act="fpsdone" title="打开转好的 30fps 文件">播放30帧版</button>'
+              : (t.fps > 30
+                // data-file + 由 fpsJob 决定文案/禁用态：这样队列重建后"转帧中 42%"不会丢
+                ? '<button class="btn ghost" data-act="fps30" data-file="' + escapeAttr(t.file || "") + '"' +
+                  ((fpsJob && t.file === fpsJob.file) ? " disabled" : "") + ">" +
+                  escapeHtml(fpsBtnText(t.file)) + "</button>"
+                : ''))
           : '') +
         (t.state === "queued" ? '<button class="btn ghost" data-act="cancel">取消</button>' : '') +
         (t.state === "running" ? '<button class="btn ghost" data-act="cancel">停止</button>' : '') +
+        // 失败 / 被取消的任务给一个重试入口 —— 否则只能回输入框重新粘一遍链接
+        (t.state === "error" ? '<button class="btn ghost" data-act="retry">重试</button>' : '') +
       '</div>';
 
     // 完成的任务可以单独播放/看属性/定位
@@ -1948,10 +2853,21 @@ function renderTasks(src) {
       item.querySelector('[data-act="play"]').onclick = () => callApi("open_file", t.file);
       item.querySelector('[data-act="props"]').onclick = (e) => probeAndShow(t.file, e.currentTarget);
       item.querySelector('[data-act="dir"]').onclick = () => callApi("show_in_folder", t.file);
+      const fpsBtn = item.querySelector('[data-act="fps30"]');
+      if (fpsBtn) fpsBtn.onclick = () => startFpsConvert(t, fpsBtn);
+      const doneBtn = item.querySelector('[data-act="fpsdone"]');
+      if (doneBtn) doneBtn.onclick = () => callApi("open_file", t.fpsOut);
     }
     const cancelBtn = item.querySelector('[data-act="cancel"]');
     if (cancelBtn) {
       cancelBtn.onclick = () => callApi("cancel_task", t.id);
+    }
+    const retryBtn = item.querySelector('[data-act="retry"]');
+    if (retryBtn) {
+      retryBtn.onclick = async () => {
+        const r = await callApi("retry_task", t.id);
+        if (r && !r.ok) addLogLineLocal("重试失败：" + (r.msg || "未知错误"), "err", src);
+      };
     }
     box.appendChild(item);
   });
@@ -2064,20 +2980,29 @@ function updateProgress(src) {
 /* ============ 初始化 ============ */
 async function init() {
   bindEvents();
-  applySkin("dark-linear");
+  // 先包一层，之后任何（含外部的）set_skin 调用都会同步界面
+  patchSkinApi();
+  /* 先套个默认皮肤，避免首屏裸露无样式的一瞬。
+     ⚠️ persist=false 是关键：这里只是占位，**不能写配置**——
+     用户的皮肤是下面 await get_config() 才拿到的，如果这一句也写配置，
+     就会在拿到之前先把用户的选择覆盖成 dark-linear（重启后皮肤永远回到深色 Linear）。
+     另外这个占位也顺带决定了 fluid.js 要不要建 WebGL 上下文：
+     它是普通皮肤，所以非玻璃皮肤用户启动时压根不会建（惰性初始化）。
+     等下面 applySkin(cfg.skin) 拿到真皮肤，如果是玻璃的，那一刻才去建。 */
+  applySkin("dark-linear", false);
   const cfg = await callApi("get_config");
   if (cfg) {
-    if (cfg.skin) applySkin(cfg.skin);
+    if (cfg.skin && cfg.skin !== currentSkin) applySkin(cfg.skin);
     renderVersion(cfg.version);
     // dirs 形如 { yt: [...], social: [...] }；老版本可能是数组，主进程已归一化
     if (cfg.dirs && !Array.isArray(cfg.dirs)) {
       dirs.yt = Array.isArray(cfg.dirs.yt) ? cfg.dirs.yt : [];
       dirs.social = Array.isArray(cfg.dirs.social) ? cfg.dirs.social : [];
+      dirs.direct = Array.isArray(cfg.dirs.direct) ? cfg.dirs.direct : [];
     } else if (Array.isArray(cfg.dirs)) {
       dirs.yt = cfg.dirs;
     }
     quality = cfg.quality || "4K";
-    fps = cfg.default_fps || "0";
     proxyMode = cfg.proxy_mode || "system";
     cookiesBrowser = cfg.cookies_browser || "firefox";
     $("#proxy-addr").value = cfg.proxy || "";
@@ -2088,9 +3013,6 @@ async function init() {
   renderRadios("quality-opts",
     ["原画", "4K", "1080P", "720P"].map((v) => ({ value: v, label: v })), quality,
     (v) => { quality = v; callApi("save_quality", v); });
-  renderRadios("fps-opts",
-    [{ value: "0", label: "不转换" }, { value: "30", label: "转 30fps" }, { value: "24", label: "转 24fps" }], fps,
-    (v) => { fps = v; callApi("save_fps", v); });
   renderRadios("proxy-opts",
     [{ value: "system", label: "跟随系统" }, { value: "manual", label: "手动" }, { value: "direct", label: "直连" }], proxyMode,
     (v) => { proxyMode = v; callApi("save_proxy_mode", v); refreshProxyHint(); });
@@ -2113,6 +3035,14 @@ async function init() {
   // 浏览器 Cookies（设置页）
   renderCookiesOptions();
   renderCookieHint();
+
+  // 视频播放：手填外部播放器路径（设置页）
+  bindPlayerPath();
+
+  // 玻璃皮肤性能档位（设置页）。放在皮肤渲染之后 —— 它要读 currentSkin 判断显隐。
+  if (cfg && cfg.perf_tier) perfTier = cfg.perf_tier;
+  applyPerfTier(perfTier);
+  renderPerfTierUI();
 
   // 图片压缩（设置记住上次选择）
   if (cfg && cfg.img) {
@@ -2140,12 +3070,22 @@ async function init() {
     if ($("#vid-end") && v.end) $("#vid-end").value = v.end;
   }
   initVideoPage();
+  initComposePage();
+  initUpdateUI();
   renderVidEncoderOptions();
+
+  // 下载封面图页：绑定事件 + 回显上次选的保存目录
+  bindCoverEvents();
+  if (cfg && cfg.cover_dir) {
+    const cd = $("#cover-dir");
+    if (cd) cd.value = cfg.cover_dir;
+  }
 
   // 环境检测
   const comps = await callApi("get_components");
   if (comps) renderComponents(comps);
   renderPlaybackCaps();
+  renderRenderCaps();
 
   // 恢复队列显示（如页面刷新过，主进程里可能还有任务在跑）
   const t = await callApi("get_tasks");
@@ -2204,6 +3144,44 @@ if (window.api && window.api.on_task_update) {
   });
 }
 
+// 转 30 帧进行中：把百分比写在按钮上（队列行就地更新，不碰视频处理页的进度条）
+if (window.api && window.api.on_fps_progress) {
+  window.api.on_fps_progress((d) => {
+    if (!d || d.percent == null) return;
+    // 只认"正在转的那个文件"的进度，别去刷别的行
+    if (fpsJob && d.file && d.file !== fpsJob.file) return;
+    const target = d.file || (fpsJob && fpsJob.file);
+    if (!target) return;
+    if (fpsJob && fpsJob.file === target) fpsJob.percent = d.percent;
+    // 按文件精确匹配 —— 队列重建后按钮是新的，但 data-file 还在，照样能对上
+    patchFpsButton(target, d.percent);
+  });
+}
+
+// 转 30 帧完成：把对应队列行标成「已降帧」，并刷新（按钮从「降为30fps」变成不可点的「已降帧」）
+if (window.api && window.api.on_fps_done) {
+  window.api.on_fps_done((data) => {
+    if (!data || !data.file) return;
+    const t = allTasks.find((x) => x.file === data.file);
+    if (t) {
+      if (data.ok) {
+        t.fpsOut = data.out || "1";
+      } else {
+        t.fpsOut = "";
+      }
+      renderTasks(t.source || "yt");
+    }
+    if (data.ok) {
+      appendLog(">>> 已生成 30fps 版本：" + (data.out || ""), "ok", t && t.source);
+    }
+  });
+}
+
+// 在线更新：主进程把 检查/下载/完成/出错 各阶段推过来，这里统一刷新那张卡片
+if (window.api && window.api.on_update_status) {
+  window.api.on_update_status((d) => renderUpdateState(d));
+}
+
 // 队列全部结束
 if (window.api && window.api.on_queue_idle) {
   window.api.on_queue_idle(() => {
@@ -2219,6 +3197,14 @@ if (window.api && window.api.on_image_done) {
   window.api.on_image_done((d) => onImageDone(d));
 }
 
+// 下载封面图：单个链接出结果 / 整批结束
+if (window.api && window.api.on_cover_item) {
+  window.api.on_cover_item((d) => onCoverItem(d));
+}
+if (window.api && window.api.on_cover_done) {
+  window.api.on_cover_done((d) => onCoverDone(d));
+}
+
 // 视频处理：单条完成 / 进度 / 整批结束
 if (window.api && window.api.on_video_item) {
   window.api.on_video_item((d) => onVideoItem(d));
@@ -2228,6 +3214,129 @@ if (window.api && window.api.on_video_progress) {
 }
 if (window.api && window.api.on_video_done) {
   window.api.on_video_done((d) => onVideoDone(d));
+}
+if (window.api && window.api.on_compose_item) {
+  window.api.on_compose_item((d) => onComposeItem(d));
+}
+if (window.api && window.api.on_compose_progress) {
+  window.api.on_compose_progress((d) => onComposeProgress(d));
+}
+if (window.api && window.api.on_compose_done) {
+  window.api.on_compose_done((d) => onComposeDone(d));
+}
+
+/* ============ 软件更新 ============ */
+// 更新源是"静态地址"：放 latest.yml + 安装包就行，不需要服务端。
+// 默认 GitHub Release；国内直连常不通，所以界面上留了「更新源」可改（换自己的 R2/CDN 不用重打包）。
+const UPDATE_PAGE = "https://github.com/jackyzbn-eng/FallenAngels_ytdlp4k/releases";
+
+function updStatus(text) {
+  const el = $("#upd-status");
+  if (el) el.textContent = text ? "  ·  " + text : "";
+}
+
+function renderUpdateState(st) {
+  if (!st) return;
+  const cur = $("#upd-current");
+  if (cur && st.currentVersion) cur.textContent = st.currentVersion;
+
+  const phase = st.phase || "idle";
+  const wrap = $("#upd-progress-wrap");
+  const downloading = phase === "downloading";
+  if (wrap) wrap.hidden = !downloading;
+  if (downloading) {
+    const fill = $("#upd-progress-fill");
+    const pct = $("#upd-progress-percent");
+    const det = $("#upd-progress-detail");
+    if (fill) fill.style.width = (st.percent || 0) + "%";
+    if (pct) pct.textContent = Math.round(st.percent || 0) + "%";
+    if (det) det.textContent = st.detail || "";
+  }
+
+  const row = $("#upd-actions");
+  const canAct = phase === "available" || downloading || phase === "downloaded";
+  if (row) row.hidden = !canAct;
+  const dl = $("#upd-download");
+  if (dl) { dl.hidden = phase === "downloaded"; dl.disabled = downloading; }
+  const inst = $("#upd-install");
+  if (inst) {
+    inst.hidden = phase !== "downloaded";
+    inst.disabled = false;
+    inst.textContent = "立即重启安装";
+  }
+
+  const texts = {
+    idle: "",
+    checking: "正在检查…",
+    latest: "已是最新版本",
+    available: "发现新版本 " + (st.version || ""),
+    downloading: "正在下载更新…",
+    downloaded: "新版本 " + (st.version || "") + " 已下载，重启后生效",
+    error: st.msg || "检查失败",
+  };
+  updStatus(texts[phase] !== undefined ? texts[phase] : "");
+}
+
+async function initUpdateUI() {
+  const info = await callApi("get_update_state");
+  if (!info) return;
+  const cur = $("#upd-current");
+  if (cur) cur.textContent = info.currentVersion || "—";
+  const feed = $("#upd-feed");
+  if (feed) {
+    feed.value = info.custom || "";
+    feed.placeholder = info.custom ? "" : (info.feedUrl || "");
+  }
+  if (info.state) renderUpdateState(Object.assign({ currentVersion: info.currentVersion }, info.state));
+
+  const check = $("#upd-check");
+  if (check) {
+    check.onclick = async () => {
+      check.textContent = "检查中…";
+      const r = await callApi("check_update");
+      check.textContent = "检查更新";
+      if (r && !r.ok) alert("检查更新失败：" + (r.msg || "未知原因"));
+    };
+  }
+  const dl = $("#upd-download");
+  if (dl) {
+    dl.onclick = async () => {
+      dl.disabled = true;
+      const r = await callApi("download_update");
+      if (r && !r.ok) { dl.disabled = false; alert("下载更新失败：" + (r.msg || "未知原因")); }
+    };
+  }
+  const inst = $("#upd-install");
+  if (inst) {
+    inst.onclick = async () => {
+      // 重启会中断正在跑的任务 —— 先提醒，别让用户白丢一个下载
+      const busyTasks = (typeof allTasks !== "undefined" ? allTasks : [])
+        .some((t) => t.state === "running" || t.state === "queued");
+      const busyJobs = (typeof vidJob !== "undefined" && vidJob) || (typeof cmpJob !== "undefined" && cmpJob);
+      if ((busyTasks || busyJobs) &&
+        !confirm("还有任务正在跑，重启会中断它们。确定现在安装吗？")) return;
+      inst.disabled = true;
+      inst.textContent = "正在重启…";
+      const r = await callApi("install_update");
+      if (r && !r.ok) { inst.disabled = false; inst.textContent = "立即重启安装"; alert("安装失败：" + (r.msg || "")); }
+    };
+  }
+  const page = $("#upd-page");
+  if (page) page.onclick = async () => {
+    const r = await callApi("open_url", UPDATE_PAGE);
+    if (r && !r.ok) alert("打不开：" + (r.msg || ""));
+  };
+  const saveFeed = $("#upd-save-feed");
+  if (saveFeed) {
+    saveFeed.onclick = async () => {
+      const v = (($("#upd-feed") || {}).value || "").trim();
+      if (v && !/^https?:\/\//i.test(v)) { alert("更新源要是一个 http(s) 地址，比如 https://你的域名/updates"); return; }
+      const eff = await callApi("set_update_url", v);
+      const feedEl = $("#upd-feed");
+      if (feedEl) feedEl.placeholder = v ? "" : (eff || "");
+      updStatus(v ? "更新源已保存，下次检查生效" : "已恢复默认更新源");
+    };
+  }
 }
 
 // DOM 就绪后初始化（Electron preload 的 window.api 此时已可用）

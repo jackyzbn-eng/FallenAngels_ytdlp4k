@@ -19,50 +19,94 @@ if (!app || typeof app.disableHardwareAcceleration !== 'function') {
   process.exit(1);
 }
 
-// ---------- 显示相关的三个启动开关（都必须在 app ready 之前设置） ----------
+/* ---------- 显示相关的启动开关（都必须在 app ready 之前设置） ----------
 
-// ① GPU 逻辑并进主进程。
-// GPU 子进程起不来时 Chromium 会连试 6 次然后 FATAL 自杀（"GPU process isn't usable. Goodbye."，
-// 退出码 2147483651），窗口根本不出现、也没有任何 JS 报错。并进主进程就没有那个会崩的独立进程了。
-app.commandLine.appendSwitch('in-process-gpu');
+   设计原则：**默认不给所有人的电脑打补丁，只在真的出过问题的那台机器上启用。**
+   原因：下面这两个开关能治好"窗口根本不出来"，但代价是把风险转嫁给整机 ——
+   比如 in-process-gpu 会让显卡出问题时连主进程一起带走（用户看到的是"软件闪退"），
+   而标准模式下显卡崩了只是界面重载一下。别人的电脑不一定有我们那台机器的毛病，
+   所以一律先按标准模式起，起不来才降级。
 
-// ② 渲染进程沙箱。
-// 这台机器上渲染进程会被系统直接杀掉（render-process-gone: reason="killed" exitCode=1），
-// 表现是应用打开了却一片空白。本应用只加载本地 file:// 页面、不加载远程内容，攻击面很小。
-app.commandLine.appendSwitch('no-sandbox');
+   降级机制：一个"启动中"标记文件。
+     · 启动时写标记 → 稳定跑满 12 秒就删掉
+     · 下次启动若发现标记还在 ⇒ 上次启动没跑稳 ⇒ 这次升一级
+     · 正常退出（含开完就秒关）在 will-quit 里清标记，避免误判（这个坑实测踩到过）
+     · 升到 L3 就封顶，不再往上加 —— 到顶还跑不稳就是别的毛病了
+   四级，每级治一种病：
+     L0 标准                  → 默认，所有人的电脑都先走这条
+     L1 +no-sandbox           → 治"渲染进程被杀、窗口一片空白"
+     L2 L1 +in-process-gpu    → 治"GPU 子进程起不来、窗口不出现"
+     L3 L2 +关硬件加速        → 治"GPU 整体不稳、连并进主进程都救不了"
+   标记文件里记下已经升到哪一级，逐级升而不是一步到位用最猛的。
 
-// ③ 硬件加速要不要开，取决于上一次启动稳不稳。
-// **开着才能播 HEVC** —— 实测（2026-09-17）：
-//   硬件加速开 → HEVC 竖屏 .mov 正常 loadedmetadata 1080×1920，能播；
-//   硬件加速关 → HEVC 报 DEMUXER_ERROR_COULD_NOT_OPEN，H.264 也只解出 0×0。
-// 用户的素材大量是 HEVC，关了它就只能先转一份低画质代理才能预览（费时费盘），
-// 所以默认开着。代价是：GPU 驱动出问题时可能把主进程一起带走 —— 用一个标记文件自愈：
-// 启动时写标记，稳定跑满 12 秒就删掉；下次启动若发现标记还在，说明上次没跑稳，
-// 这次就自动降级成禁用硬件加速（视频预览可能因此播不了 HEVC，前端会退到"用系统播放器打开"）。
-// 标记文件路径。"启动中"标记的语义：存在 = 上次启动没能跑稳。
-// 正常退出（含用户开完就秒关）必须在 will-quit 里清掉，否则下次会被误判成崩溃而降级 —— 这个坑实测踩到过。
+   本机实测（2026-09-26）：标准模式下 GPU 子进程零崩溃、WebGL2 正常、
+   玻璃皮肤流体正常，连跑 3 次全成功 —— 所以本机现在走的也是标准模式。
+   ⚠️ 但注意：**这台机器上 no-sandbox 其实是必需的**（清掉标记后纯标准模式会被 SIGTERM 杀掉），
+   所以本机跑一轮下来通常停在 L1。给别人用时不该复制这个结论 —— 别人的机器没这毛病，
+   从 L0 起就是对的，起不来它会自己降级。 */
+
 function startFlagPath() {
   try { return path.join(app.getPath('userData'), 'starting.flag'); } catch (e) { return ''; }
 }
 
+/* 读上次的启动结果，决定这次用哪一档。
+   标记文件里存的是数字等级；返回 0~3，含义见下面 COMPAT_LEVEL 的注释。
+   逐级升，到顶（3）就不再往上加 —— 到顶还跑不稳就是别的毛病了，
+   继续"降级"没有意义，只会让用户每次都从零走一遍。 */
 function gpuCompatMode() {
   const flag = startFlagPath();
-  if (!flag) return false;
+  if (!flag) return 0;
   try {
     if (fs.existsSync(flag)) {
-      try { fs.unlinkSync(flag); } catch (e) { /* 删不掉也无所谓 */ }
-      return true;                       // 上次启动没跑稳 → 兼容模式
+      // 上次没跑稳：读它记录到过哪一级，这次再升一级
+      let prev = 0;
+      try { prev = parseInt(fs.readFileSync(flag, 'utf8'), 10) || 0; } catch (e) { prev = 0; }
+      const level = Math.min(prev + 1, 3);
+      fs.writeFileSync(flag, String(level));
+      return level;
     }
     fs.mkdirSync(path.dirname(flag), { recursive: true });
-    fs.writeFileSync(flag, String(Date.now()));
+    fs.writeFileSync(flag, '0');
     // 跑满 12 秒就说明启动这关过了，标记撤掉：之后再怎么崩也不算"启动失败"，
     // 不会因为一次运行中的崩溃就把用户永久打进兼容模式
     setTimeout(() => { try { fs.unlinkSync(flag); } catch (e) { /* 已经删了 */ } }, 12000);
   } catch (e) { /* 写不了标记就算了，按正常模式来 */ }
-  return false;
+  return 0;
 }
 
-const HW_DISABLED = gpuCompatMode();
+/* 启动档位。逐级递进，每级治一种病，只有前面的都没治好才升到下一级：
+     L0 标准                  —— 默认，所有人的电脑都先走这条
+     L1 +no-sandbox           —— 治"渲染进程被杀 → 窗口一片空白"
+     L2 +in-process-gpu       —— 治"GPU 子进程起不来 → 窗口压根不出现"
+     L3 +关硬件加速           —— 治"GPU 整体不稳 → 连并进主进程都救不了"
+   为什么不在 L2 就一起关硬件加速：关掉之后视频预览就播不了 HEVC 了（实测），
+   用户素材大量是 HEVC，代价很大。**能少关一级就少关一级。**
+   （这部分逻辑跟下面的 gpuCompatMode 配套，改档位时两边要一起看。） */
+const COMPAT_LEVEL = gpuCompatMode();
+
+if (COMPAT_LEVEL >= 1) {
+  // L1：渲染进程沙箱。
+  // 某些机器上渲染进程会被系统直接杀掉（render-process-gone: reason="killed" exitCode=1），
+  // 表现是应用打开了却一片空白。本应用只加载本地 file:// 页面、不加载远程内容，攻击面很小。
+  app.commandLine.appendSwitch('no-sandbox');
+}
+
+if (COMPAT_LEVEL >= 2) {
+  // L2：GPU 逻辑并进主进程。
+  // GPU 子进程起不来时 Chromium 会连试 6 次然后 FATAL 自杀（"GPU process isn't usable. Goodbye."，
+  // 退出码 2147483651），窗口根本不出现、也没有任何 JS 报错。并进主进程就没有那个会崩的独立进程了。
+  // ⚠️ 代价：显卡出问题时会把主进程一起带走（用户看到"闪退"而不是"界面重载"），
+  //    所以**只在上一级也没治好时才用**，不要默认打开。
+  app.commandLine.appendSwitch('in-process-gpu');
+}
+
+// L3：彻底关硬件加速。
+// **开着才能播 HEVC** —— 实测（2026-09-17）：
+//   硬件加速开 → HEVC 竖屏 .mov 正常 loadedmetadata 1080×1920，能播；
+//   硬件加速关 → HEVC 报 DEMUXER_ERROR_COULD_NOT_OPEN，H.264 也只解出 0×0。
+// 代价：视频预览播不了 HEVC，前端会退到"用系统播放器打开"（PotPlayer/VLC/MPV）。
+// 所以这是最后手段 —— 只有前三档都没让它跑稳才走到这里。
+const HW_DISABLED = COMPAT_LEVEL >= 3;
 if (HW_DISABLED) app.disableHardwareAcceleration();
 
 // ---------- 路径定位（与 core.py / envcheck.py 对齐） ----------
@@ -110,9 +154,28 @@ function dataDir() {
 }
 
 function configPath() {
-  const appD = appDir();
-  if (writable(appD)) return path.join(appD, 'config.json');
-  return path.join(dataDir(), 'config.json');
+  const userCfg = path.join(dataDir(), 'config.json');
+  const appCfg = path.join(appDir(), 'config.json');
+
+  // 配置一律放用户目录（%APPDATA%\<产品名>\config.json）。
+  //
+  // ⚠️ 为什么不能放 exe 同目录：NSIS 安装新版本时会先卸载旧版、清空程序目录，
+  // 放在那里的 config.json 会被一起删掉 —— 用户表现为「换个版本，
+  // 之前设的保存路径全没了」。这是实测确认过的（2026-10-12）。
+  //
+  // 兼容早期版本（那时配置确实写在 exe 同目录）：用户目录还没有配置时搬过来，
+  // 保证老用户升级后设置不丢。
+  if (!fs.existsSync(userCfg) && fs.existsSync(appCfg)) {
+    try {
+      fs.mkdirSync(path.dirname(userCfg), { recursive: true });
+      fs.copyFileSync(appCfg, userCfg);
+    } catch (e) { /* 迁移失败就退回 exe 同目录那份 */ }
+  }
+  if (fs.existsSync(userCfg)) return userCfg;
+
+  // 兜底：用户目录不可写（受限环境）时退回 exe 同目录
+  if (writable(appDir())) return appCfg;
+  return userCfg;
 }
 
 function toolDirs() {
@@ -169,6 +232,15 @@ function findJsRuntime() {
 //     不支持代理（实测直连 YouTube 必然失败）。所以 provider 优先级更高的
 //     deno 版本被我们通过"不打包 src/generate_once.ts"排除掉了。
 // 若系统没有 Node，则完全不启用这套东西（避免每次白等 20 秒超时）。
+//
+// ⚠️ 生成器还依赖 canvas（bgutils-js 用它模拟浏览器 DOM 环境）。
+//    实测缺了它 PO Token 会**静默失效**，表现为「某些视频只能下到 360p」，
+//    日志里只有一行容易被当噪音的 `Not implemented: HTMLCanvasElement's
+//    getContext() method` —— 2026-10-14 就是栽在这上面。
+//    canvas 是原生模块，npm install 失败时会被静默跳过，所以**更新 bgutil 之后
+//    务必确认这个文件存在**：
+//      tools/bgutil/server/node_modules/canvas/build/Release/canvas.node
+//    缺失就补装：cd tools/bgutil/server && npm install canvas
 function potServerHome() {
   return path.join(resourcesDir(), 'tools', 'bgutil', 'server');
 }
@@ -320,11 +392,17 @@ function getCached(key) {
   return c;
 }
 
-// 缓存里除了"要不要 cookies"，也要记"有没有用封顶客户端" ——
-// 否则下次命中缓存时会漏掉 player_client，年龄限制视频会掉回 360p。
-function setCached(key, cookies, capped) {
+// 缓存记两件事：
+//   cookies —— 上次是否需要登录态
+//   auth    —— 上次"需要 cookies"是不是**鉴权失败**造成的
+// 这个区分很关键（2026-10-14 实测踩的坑）：带上 cookies 会让 YouTube 的
+// **账号级 SABR 实验**生效，默认客户端只给 360p；不带 cookies 反而能拿 4K。
+// 所以只有**确实因为鉴权失败**才值得用 cookies。其它原因（网络抖动、PO Token
+// 生成失败等）造成的 cookies 记录属于误判 —— 下次必须先用"不带 cookies"重试，
+// 否则清晰度会被永久压到 360p（且看起来"下载成功"，毫无报错）。
+function setCached(key, cookies, authNeeded) {
   const all = loadCache();
-  all[key] = { cookies: !!cookies, capped: !!capped, ts: Date.now() };
+  all[key] = { cookies: !!cookies, auth: !!authNeeded, ts: Date.now() };
   saveCache(all);
 }
 
@@ -359,10 +437,14 @@ const DEFAULT_CONFIG = {
   lastdir_file: '~/.fallen_angels_lastdir.txt',
   default_fps: '0',
   quality: '4K',
-  // 两个下载页各有自己的分类列表，所以 dirs 按来源分组
+  // 在线更新源。留空 = 用代码里的默认值（GitHub Release 的固定入口）。
+  // 换成自己的 R2 / CDN 时，改这里或界面上那个输入框即可，不用重新打包。
+  update_url: '',
+  // 三个下载页各有自己的分类列表，所以 dirs 按来源分组
   dirs: {
     yt: [{ name: '1080P', path: '' }, { name: '4K', path: '' }],
     social: [{ name: '社媒', path: '' }],
+    direct: [{ name: '直链', path: '' }],
   },
   // 图片压缩页的设置（记住上次选择）
   img_quality: '中',
@@ -370,6 +452,16 @@ const DEFAULT_CONFIG = {
   img_maxedge: 0,
   img_outmode: 'sub',
   img_outdir: '',
+  // 封面图下载页的保存目录。跟视频/图片都分开存 —— 封面是"素材"性质，
+  // 混进视频目录会越攒越乱（用户 2026-09-29 拍板：单独一个目录）
+  cover_dir: '',
+  // 玻璃皮肤的背景流体要吃 GPU。老核显 / 远程桌面 / 笔记本省电模式下会拖慢界面，
+  // 所以留一个手动档位；auto = 自己探测掉帧后降档（见 web/ui/fluid.js 的 PERF_TIERS）
+  perf_tier: 'auto',   // auto / high / low
+  // 外部播放器的手动指定路径（空 = 让程序自动找）。自动找有三条路（注册表 / 标准路径 /
+  // 系统默认），但在"reg.exe 被杀软拦 + 播放器装在冷门目录"的机器上会全都落空，
+  // 这时靠用户手填一个路径就一定能兜住。
+  external_player: '',
   // 视频处理页的设置
   video: {
     mode: 'trim',
@@ -391,14 +483,19 @@ function normalizeDirs(cfg) {
   const d = cfg.dirs;
   if (Array.isArray(d)) {
     // 老配置：数组里通常就是 1080P / 4K 这类分类名，原样留给油管页
-    cfg.dirs = { yt: d, social: [{ name: '社媒', path: '' }] };
+    cfg.dirs = {
+      yt: d,
+      social: [{ name: '社媒', path: '' }],
+      direct: [{ name: '直链', path: '' }],
+    };
   } else if (!d || typeof d !== 'object') {
     cfg.dirs = JSON.parse(JSON.stringify(DEFAULT_CONFIG.dirs));
   } else {
     if (!Array.isArray(d.yt)) d.yt = JSON.parse(JSON.stringify(DEFAULT_CONFIG.dirs.yt));
     if (!Array.isArray(d.social)) d.social = JSON.parse(JSON.stringify(DEFAULT_CONFIG.dirs.social));
+    if (!Array.isArray(d.direct)) d.direct = JSON.parse(JSON.stringify(DEFAULT_CONFIG.dirs.direct));
   }
-  for (const k of ['yt', 'social']) {
+  for (const k of ['yt', 'social', 'direct']) {
     for (const item of cfg.dirs[k]) {
       // 老配置里分类名存在 label 字段（如 1080P / 4K），name 会是个占位值。
       // 迁移时以 label 为准，否则「1080P / 4K」会被冲成「分类 / 分类」。
@@ -445,6 +542,21 @@ function saveConfig(cfg) {
   } catch (e) {}
 }
 
+// 各套皮肤对应的窗口底色。玻璃皮肤的面板是半透明的，底下的窗口底色会透出来，
+// 所以换皮肤时要同步把窗口底色换掉，否则会出现"深底套浅面板"的串色。
+// 玻璃四套的底色就是各自流体配色的 colors[0]（纯黑/近黑，不是深蓝）。
+const SKIN_WINDOW_BG = {
+  'light-cindy': '#f8f8f6',
+  'light-workbuddy': '#f5f6f7',
+  'dark-linear': '#08090a',
+  'light-motrix': '#eef4ff',
+  'dark-neon': '#0b0d12',
+  'dark-glass': '#000000',
+  'glass-aurora': '#020807',
+  'glass-amethyst': '#05020b',
+  'glass-ember': '#080201',
+};
+
 // ---------- 全局状态 ----------
 let cfg = loadConfig();
 let mainWindow = null;
@@ -457,7 +569,7 @@ function createWindow() {
     height: 800,
     minWidth: 900,
     minHeight: 660,
-    backgroundColor: '#08090a',
+    backgroundColor: SKIN_WINDOW_BG[cfg.skin] || '#08090a',
     autoHideMenuBar: true,
     title: 'Fallen Angels - 视频下载器（油管 / 社媒）',
     // 开发模式下用项目内图标；打包后由 exe 资源自带，无需运行时指定
@@ -468,6 +580,9 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
+
+  // 窗口底色跟随当前皮肤（玻璃皮肤是半透明面板，底色会从面板后面透出来）
+  mainWindow.setBackgroundColor(SKIN_WINDOW_BG[cfg.skin] || '#08090a');
 
   // 加载前端（复用 web/ 资产）
   mainWindow.loadFile(htmlPath);
@@ -664,6 +779,11 @@ ipcMain.handle('get_config', () => {
       outDir: cfg.img_outdir || '',
     },
     video: cfg.video || DEFAULT_CONFIG.video,
+    perf_tier: cfg.perf_tier || 'auto',
+    // 封面图下载页的保存目录。⚠️ 这个 handler 是**白名单式**返回（只挑固定字段），
+    //    新加的配置项必须在这里补一行，否则前端读到的永远是 undefined
+    //    —— 表现是"选好的目录重启就丢"（2026-09-29 踩到）。
+    cover_dir: cfg.cover_dir || '',
   };
 });
 
@@ -690,7 +810,15 @@ ipcMain.handle('save_img_settings', (e, s) => {
   return true;
 });
 
-ipcMain.handle('set_skin', (e, skin) => { cfg.skin = skin; saveConfig(cfg); return true; });
+ipcMain.handle('set_skin', (e, skin) => {
+  cfg.skin = skin;
+  saveConfig(cfg);
+  // 玻璃皮肤要窗口底色配合，否则半透明面板后面露出的还是上一套皮肤的颜色
+  try {
+    if (mainWindow) mainWindow.setBackgroundColor(SKIN_WINDOW_BG[skin] || '#08090a');
+  } catch (err) { /* 窗口没了就算了，下次启动会按新配置设 */ }
+  return true;
+});
 ipcMain.handle('save_cookies_browser', (e, b) => { cfg.cookies_browser = b; saveConfig(cfg); return true; });
 
 // 设置页用：当前 cookies 来源 + 实际会用的 Firefox profile 名（便于用户确认）
@@ -719,10 +847,59 @@ ipcMain.handle('get_cookie_info', () => {
   return { browser: b, detail, hasCookiesFile: hasFile };
 });
 
+// ---------- 每个「浏览」按钮各自记路径 ----------
+// 为什么自己做：Electron 的 showOpenDialog 在不传 defaultPath 时，**所有弹窗共享同一份
+// "上次打开目录"**，于是"选完音乐再选视频"会跳到音乐文件夹 —— 用户明确要求按按钮分开记。
+// 存在 dataDir()/last-dirs.json（跟 config 同目录，升级不丢），按 key 各存一个目录。
+function lastDirsPath() {
+  return path.join(dataDir(), 'last-dirs.json');
+}
+let lastDirsCache = null;
+function loadLastDirs() {
+  if (lastDirsCache) return lastDirsCache;
+  try { lastDirsCache = JSON.parse(fs.readFileSync(lastDirsPath(), 'utf-8')) || {}; }
+  catch (e) { lastDirsCache = {}; }
+  return lastDirsCache;
+}
+function saveLastDirs() {
+  try { fs.writeFileSync(lastDirsPath(), JSON.stringify(lastDirsCache || {}, null, 2)); } catch (e) { /* 忽略 */ }
+}
+// 记住目录（传文件就记它所在的文件夹；目录已被删掉就当没记过，别把弹窗带进死路）
+function rememberedDir(key) {
+  const d = loadLastDirs()[key];
+  if (!d) return '';
+  try { if (fs.statSync(d).isDirectory()) return d; } catch (e) { return ''; }
+  return '';
+}
+function rememberDir(key, picked) {
+  if (!picked) return;
+  const s = String(picked);
+  let d = '';
+  try {
+    d = fs.statSync(s).isDirectory() ? s : path.dirname(s);
+  } catch (e) {
+    // 路径此刻访问不到（网盘没挂载 / 刚被移走）：按字符串猜一把，
+    // 有扩展名就当文件取上级，否则当文件夹。猜错也只是记个目录，不会丢数据。
+    d = path.extname(s) ? path.dirname(s) : s;
+  }
+  if (!d || d === '.') return;
+  loadLastDirs()[key] = d;
+  saveLastDirs();
+}
+// 统一入口：key 不同 → 各自记住各自的目录
+async function openDialogRemembered(win, key, opts) {
+  const o = Object.assign({}, opts);
+  const dir = rememberedDir(key);
+  if (dir) o.defaultPath = dir;
+  const r = await dialog.showOpenDialog(win || mainWindow, o);
+  if (!r.canceled && r.filePaths && r.filePaths.length) rememberDir(key, r.filePaths[0]);
+  return r;
+}
+
 // 导入 cookies.txt（Chrome/Edge 在 v127+ 只能走这条路）
 // 支持两类来源：yt-dlp 的 Netscape 格式、以及浏览器扩展导出的同格式文件
 ipcMain.handle('import_cookies_file', async () => {
-  const r = await dialog.showOpenDialog(mainWindow, {
+  const r = await openDialogRemembered(mainWindow, 'cookies_txt', {
     title: '选择导出的 cookies.txt',
     filters: [{ name: 'Cookies 文件', extensions: ['txt'] }],
     properties: ['openFile'],
@@ -770,8 +947,10 @@ ipcMain.handle('get_system_proxy', async () => {
 });
 ipcMain.handle('save_dirs', (e, dirs) => { cfg.dirs = dirs; saveConfig(cfg); return true; });
 
-ipcMain.handle('pick_folder', async (e, title) => {
-  const r = await dialog.showOpenDialog(mainWindow, {
+ipcMain.handle('pick_folder', async (e, title, key) => {
+  // key 决定"记哪个槽"；不传就按标题兜底（标题相同 = 视为同一个用途）
+  const k = String(key || title || 'folder');
+  const r = await openDialogRemembered(mainWindow, 'folder:' + k, {
     title: String(title || '选择下载文件夹'),
     properties: ['openDirectory'],
   });
@@ -806,6 +985,36 @@ ipcMain.handle('open_file', async (e, filePath) => {
   } catch (err) {
     return { ok: false, msg: String(err) };
   }
+});
+
+// 预览素材（给「音视频拼接」列表和音乐用的播放按钮）。
+// ⚠️ 优先用自带解码器的外部播放器（PotPlayer/VLC/MPV）——4K HEVC 交给系统默认播放器
+//    很可能直接放不了（缺 HEVC 扩展），"确认素材"这个目的就落空了。都没有才退回系统默认。
+ipcMain.handle('preview_file', async (e, filePath) => {
+  const f = String(filePath || '');
+  try { fs.accessSync(f); } catch (err) { return { ok: false, msg: '文件读不到了' }; }
+  const pl = findExternalPlayer();
+  if (pl && pl.exists) {
+    try {
+      const child = spawn(pl.path, [f], { detached: true, stdio: 'ignore' });
+      child.unref();
+      return { ok: true, via: pl.name };
+    } catch (err) { /* 播放器起不来就退回系统默认 */ }
+  }
+  try {
+    const err = await shell.openPath(f);
+    return err ? { ok: false, msg: err } : { ok: true, via: '系统默认' };
+  } catch (err) {
+    return { ok: false, msg: String(err) };
+  }
+});
+
+// 用系统浏览器打开网址（更新发布页这类）
+ipcMain.handle('open_url', async (e, url) => {
+  const u = String(url || '');
+  if (!/^https?:\/\//i.test(u)) return { ok: false, msg: '不是有效的网址' };
+  try { await shell.openExternal(u); return { ok: true }; }
+  catch (err) { return { ok: false, msg: String(err) }; }
 });
 
 // 在资源管理器中定位文件
@@ -847,11 +1056,11 @@ let taskSeq = 0;
 const tasks = [];          // 全部任务（含已完成），供前端查询
 // 等待队列与在跑计数都按来源分开 —— 油管与社媒是两套独立调度器，
 // 各自 CONCURRENCY=3，谁也不会把对方的坑位占掉。
-const pendingBySource = { yt: [], social: [] };
-const runningBySource = { yt: 0, social: 0 };
+const pendingBySource = { yt: [], social: [], direct: [] };
+const runningBySource = { yt: 0, social: 0, direct: 0 };
 
 // 「停止全部」的标记按来源分开 —— 油管页点停止不该把社媒的任务也停掉。
-const stoppedBySource = { yt: false, social: false };
+const stoppedBySource = { yt: false, social: false, direct: false };
 const srcOf = (t) => (t && t.opts && t.opts.source) || 'yt';
 
 const procs = new Map();        // taskId -> Set<ChildProcess>，用于真停
@@ -909,6 +1118,8 @@ function taskSnapshot(t) {
     state: t.state, percent: t.percent || 0,
     detail: t.detail || '', file: t.file || '', msg: t.msg || '',
     res: t.res || '',   // 下载完成后核对出的真实分辨率，如 3840×2160
+    fps: t.fps || 0,    // 下载完成后核对出的真实帧率 —— 队列行据此决定要不要给「降为30fps」按钮
+    fpsOut: t.fpsOut || '',   // 已转过 30 帧的话，记下产物路径（按钮转为「已降帧」）
     source: (t.opts && t.opts.source) || 'yt',   // yt / social —— 队列是共享的，标出来才知道来自哪一页
   };
 }
@@ -1006,7 +1217,12 @@ async function reportResolution(t, quality) {
 
   const res = r.info.resolution || '-';          // 形如 1920×1012
   t.res = res;
-  pushLog('>>> 实际分辨率: ' + res + ' · ' + r.info.videoCodec + ' · ' + r.info.size, 'ok', t.id);
+  // 顺便记下真实帧率（数值）—— 队列行据此决定要不要露出「降为30fps」按钮。
+  // info.fps 是 "59.94 fps" 这样的字符串，这里解析成数字存起来。
+  const fpsNum = parseFloat(String(r.info.fps || '')) || 0;
+  t.fps = fpsNum;
+  pushLog('>>> 实际分辨率: ' + res + ' · ' + r.info.videoCodec + ' · ' +
+    (fpsNum ? fpsNum + 'fps · ' : '') + r.info.size, 'ok', t.id);
 
   const cap = QUALITY_HEIGHT[quality] || 0;
   const h = Number(String(res).split('×')[1]) || 0;
@@ -1015,9 +1231,11 @@ async function reportResolution(t, quality) {
   // 用 95% 会把成功下载误判成"没拿到该清晰度"。明显缩水（如 4K 只下到 1012）仍会提示。
   if (cap && h && h < cap * 0.85) {
     pushLog(
-      '>>> 提示：该视频没有给出 ' + quality + ' 流（YouTube 对部分视频启用 SABR 流 + PO Token 限制，' +
-      '只有拿到 token 的客户端才能取到更高清晰度），已下到当前可用的最高 ' + res + '。' +
-      '这与"是否带 cookies"无关，带 cookies 只解决年龄限制/需要登录的问题。',
+      '>>> 提示：没拿到 ' + quality + '，实际只有 ' + res + '。常见原因：① YouTube 对部分视频' +
+      '启用 SABR 流，需要 PO Token 才能取到更高清晰度；② **带 cookies 时 YouTube 会把默认' +
+      '客户端压到 360p**（账号级 SABR 实验，实测同一 4K 视频：不带 cookies=2160p、' +
+      '带 cookies=360p）。若该视频并不需要登录，删掉已下好的文件后重新添加链接，' +
+      '程序会改走"不带 cookies"分支，通常能恢复原清晰度。',
       'warn', t.id
     );
   }
@@ -1044,7 +1262,8 @@ async function runTask(t) {
       t.percent = 100;
       t.detail = '完成';
       t.file = r.file || '';
-      await reportResolution(t, o.quality);   // 核对真实分辨率并写入 t.res
+      // 直链下的是普通文件（压缩包 / 镜像 / ROM 之类），没有"实际分辨率"可核对，跳过
+      if (o.source !== 'direct') await reportResolution(t, o.quality);   // 核对真实分辨率并写入 t.res
     } else {
       t.state = 'error';
       t.detail = '失败';
@@ -1075,9 +1294,10 @@ ipcMain.handle('start_download', (e, params) => {
   const fpsVal = fps || '0';
   const pMode = proxyMode || 'system';
   const pAddr = (proxy || '').trim();
-  // 来源：yt（YouTube）/ social（抖音·小红书·B站·微博·TikTok）。
-  // 两者的解析参数差异很大，见 downloadWorker 里的分支。
-  const src = source === 'social' ? 'social' : 'yt';
+  // 来源：yt（YouTube）/ social（抖音·小红书·B站·微博·TikTok）/ direct（HTTP 文件直链）。
+  // 前两个共用 yt-dlp 解析，参数差异见 downloadWorker 里的分支；
+  // direct 走完全不同的内核（aria2 多线程分段），见 downloadDirectWorker。
+  const src = source === 'direct' ? 'direct' : (source === 'social' ? 'social' : 'yt');
 
   cfg.proxy_mode = pMode;
   cfg.proxy = pAddr;
@@ -1113,7 +1333,7 @@ ipcMain.handle('get_tasks', () => tasks.map(taskSnapshot));
 
 // 停止全部：只停**当前页面**的任务（油管页与社媒页各点各的）
 ipcMain.handle('stop_all', (e, source) => {
-  const src = source === 'social' ? 'social' : 'yt';
+  const src = source === 'direct' ? 'direct' : (source === 'social' ? 'social' : 'yt');
   stoppedBySource[src] = true;
 
   let cancelledQueued = 0;
@@ -1173,9 +1393,42 @@ ipcMain.handle('cancel_task', (e, id) => {
   return { ok: false, msg: '该任务已结束' };
 });
 
+// 重试：把失败 / 已取消的任务重置回队列，用原来的参数再跑一遍。
+// 刻意不新建任务 —— 否则同一个链接在列表里会堆出好几行，越试越乱。
+// 复用 pendingBySource，所以并发上限、取消、来源隔离这些全都自动生效。
+function retryTask(id) {
+  const t = findTask(id);
+  if (!t) return { ok: false, msg: '任务不存在' };
+  if (t.state === 'queued' || t.state === 'running') {
+    return { ok: false, msg: '该任务还在队列中' };
+  }
+  const src = srcOf(t);
+  if (!pendingBySource[src]) return { ok: false, msg: '未知来源：' + src };
+
+  // 清掉上一轮的痕迹（进度、错误文案、产物路径、帧率），否则界面会显示旧数据
+  t.state = 'queued';
+  t.percent = 0;
+  t.detail = '等待重试…';
+  t.msg = '';
+  t.file = '';
+  t.res = '';
+  t.fps = 0;
+  t.fpsOut = '';
+  cancelledTasks.delete(t.id);   // 万一是被取消的，把取消标记也清掉
+
+  pendingBySource[src].push(t.id);
+  stoppedBySource[src] = false;  // 点了重试就说明这个来源要接着干活
+  pushTaskUpdate(t);
+  pushLog(`>>> #${t.seq} 已重新加入队列`, 'dim', t.id);
+  pumpQueue(src);
+  return { ok: true };
+}
+
+ipcMain.handle('retry_task', (e, id) => retryTask(id));
+
 // 清空已完成/失败的任务记录 —— 同样只清当前页面的
 ipcMain.handle('clear_finished', (e, source) => {
-  const src = source === 'social' ? 'social' : 'yt';
+  const src = source === 'direct' ? 'direct' : (source === 'social' ? 'social' : 'yt');
   for (let i = tasks.length - 1; i >= 0; i--) {
     if (srcOf(tasks[i]) !== src) continue;
     if (tasks[i].state === 'done' || tasks[i].state === 'error') tasks.splice(i, 1);
@@ -1211,12 +1464,44 @@ function isRetryableAuthError(log) {
   return /Sign in to confirm your age|confirm you.?re not a bot|content is age-restricted|Sign in to confirm|--cookies|Video unavailable\. Sign in|HTTP Error 403|This video requires login|login required|Fresh cookies needed/i.test(log);
 }
 
-// 带 cookies 时补上备用 player client：
-// `web_safari,tv` 能过年龄限制（默认客户端在这种情况下只给 360p），
-// 但它会把清晰度**封顶在 1080p 级**（实测：普通 4K 视频用它会从 2160 掉到 1080）。
-// 所以只在"鉴权失败后的补救轮"用它 —— 普通失败不要用，否则 4K 被静默降级。
-function clientArgs(capped) {
-  return capped ? ['--extractor-args', 'youtube:player_client=web_safari,tv'] : [];
+// YouTube 的"账号级 SABR 实验"警告 —— 出现它就意味着**这份流只给到低清**。
+// 实测（2026-10-14）：带 cookies 时必现，紧接着选中的就是 format 18（640×360）。
+// 以前这条被当普通日志埋在 dim 级，导致"为什么只有 360p"完全无从判断，这里提出来。
+function sabrDetected(log) {
+  return /SABR-only streaming experiment/i.test(log);
+}
+function sabrNote(log) {
+  return log + '  ← ⚠️ YouTube 的 SABR 实验生效：这一轮只会拿到低清晰度（通常因带 cookies 触发）';
+}
+
+// 把一行子进程输出整理成 pushLog 要的参数（文本 + 级别）。
+// 单独抽成纯函数是为了**能被测试覆盖** —— 这里踩过一个坑：
+// 早先 stdout 那一路写成了无条件 `sabrNote(line)`，于是**每一行**日志都被追加了
+// SABR 提示（stderr 那一路写对了，而且两边逻辑重复）。抽出来后"哪些行该加提示"
+// 只有一个实现，也有断言盯着。
+function childLine(line, isStderr) {
+  if (sabrDetected(line)) return [sabrNote(line), 'warn'];
+  if (isStderr && /error|ERROR/.test(line)) return [line, 'err'];
+  return [line, 'dim'];
+}
+
+// 带 cookies 时补上备用 player client 组合：`web_creator,web_safari,tv`。
+//
+// 为什么需要它（2026-10-14 实测）：**只要带了 cookies，默认客户端就会被账号级
+// SABR 实验压到 360p**，必须换客户端才能拿到高清晰度。
+//
+// 为什么是这三个（同一个 4K 视频逐一实测，全部带 cookies）：
+//   web_creator  → 3840×2160 ✅ ← 唯一能"带 cookies 还拿 4K"的客户端
+//   web_safari   → 1920×1080（封顶 1080p）
+//   tv           → 与 web_safari 同级（单独用 tv_simply 会因"不支持 cookies"报错）
+//   web / web_embedded / mweb / tv_embedded → 只有 640×360
+//   android_vr / ios → 直接报 "Requested format is not available"
+// 写成一个组合交给 yt-dlp 自己挑最高档：creator 拿不到时 safari/tv 的格式还在，
+// 一次调用就同时完成"要高清 + 有兜底"，不必多跑一轮。
+//
+// 调用方是「用了 cookies 就带上它」（见 downloadWorker 里的 cappedClient）。
+function clientArgs(useAlt) {
+  return useAlt ? ['--extractor-args', 'youtube:player_client=web_creator,web_safari,tv'] : [];
 }
 
 // 用一套 cookies 设置跑一次 yt-dlp。
@@ -1263,15 +1548,14 @@ function runYtdlp({ ytdlp, args, cwdEnv, withCookies, cappedClient, label, url, 
         else if (mDest && !/\.part$/.test(mDest[1])) { lastFile = mDest[1]; setTaskTitle(taskId, mDest[1]); }
         else if (mDone) { lastFile = mDone[1]; setTaskTitle(taskId, mDone[1]); }
         if (isRetryableAuthError(line)) sawAuthError = true;
-        pushLog(line, 'dim', taskId);
+        pushLog(...childLine(line, false), taskId);
       }
     });
     proc.stderr.on('data', (buf) => {
       const line = decodeOut(buf).trim();
       if (line) {
         if (isRetryableAuthError(line)) sawAuthError = true;
-        // 错误行标红
-        pushLog(line, /error|ERROR/.test(line) ? 'err' : 'dim', taskId);
+        pushLog(...childLine(line, true), taskId);
       }
     });
     proc.on('error', (e) => {
@@ -1284,8 +1568,161 @@ function runYtdlp({ ytdlp, args, cwdEnv, withCookies, cappedClient, label, url, 
   });
 }
 
+/* ── 直链下载（aria2）────────────────────────────────────────────────
+ * 场景：HTTP/HTTPS 文件直链（archive.org、网盘、CDN 等）。
+ * yt-dlp 也能下这类文件，但它是单线程、不分片，几个 GB 的大文件很吃亏；
+ * aria2 支持多线程分段（-x / -s），正好吃满服务器声明的 Accept-Ranges。
+ *
+ * 实测背景（2026-10-08，archive.org 节点直链）：
+ *   - 服务器返回 `Accept-Ranges: bytes`，Range 请求给 206 → 确认支持分段
+ *   - archive.org 国内直连会 502，必须走代理（复用 yt-dlp 那套代理设置）
+ *   - 目标文件 3.27GB，这类体积单线程要等很久
+ */
+async function downloadDirectWorker(url, folder, pMode, proxy, taskId) {
+  const aria2 = findTool('aria2c');
+  if (!aria2) {
+    pushLog('错误：未找到直链下载内核 tools/aria2c.exe', 'err', taskId);
+    pushLog('请到「环境检测」页检查组件', 'err', taskId);
+    return { ok: false, msg: '未找到直链下载内核' };
+  }
+
+  const args = [
+    '--dir', folder,
+    '--continue',                     // 断点续传：中断后重跑接着下
+    '-x', '16',                       // 单服务器最大连接数
+    '-s', '16',                       // 分段数
+    '-k', '1M',                       // 分片大小
+    '--file-allocation=none',         // 不预分配，避免大文件启动时长时间卡住
+    '--summary-interval=1',           // 每秒输出一次进度读数
+    '--auto-file-renaming=false',     // 重名直接覆盖（与 yt-dlp 行为一致）
+    '--allow-overwrite=true',
+    '--no-conf',                      // 不读用户的 aria2 全局配置，保证行为可预期
+    '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+  ];
+
+  pushLog('>>> 开始直链下载', 'dim', taskId);
+  pushLog('>>> 链接: ' + url.slice(0, 100), 'dim', taskId);
+  pushLog('>>> 目录: ' + folder + ' · 16 线程分段', 'dim', taskId);
+
+  if (pMode === 'manual' && proxy) {
+    args.push('--all-proxy', proxy);
+    pushLog('>>> 代理: 手动 ' + proxy, 'dim', taskId);
+  } else if (pMode === 'direct') {
+    pushLog('>>> 代理: 直连', 'dim', taskId);
+  } else {
+    const sp = await getSystemProxy();
+    pushLog('>>> 代理: ' + sp.msg, 'dim', taskId);
+    if (sp.url) args.push('--all-proxy', sp.url);
+  }
+
+  args.push(url);
+
+  return await new Promise((resolve) => {
+    let lastFile = '';
+    let sawError = '';
+    const proc = spawn(aria2, args, { windowsHide: true });
+    registerProc(taskId, proc);   // 登记进程，「取消」时才能真杀掉
+
+    const handle = (raw) => {
+      const line = raw.trim();
+      if (!line) return;
+
+      const prog = parseAriaProgress(line);
+      if (prog) {
+        // 进度读数只喂进度条，不写日志（每秒一行会刷屏）
+        sendProgress({ taskId, state: 'progress', percent: prog.percent, detail: prog.detail });
+        return;
+      }
+      // 连接明细（[#xxx ...]、无百分比那种）在默认日志级别下很吵，直接丢
+      if (/^\[#\w+/.test(line)) return;
+
+      const mDone = line.match(/Download complete:\s*(.+)$/);
+      if (mDone) { lastFile = mDone[1].trim(); setTaskTitle(taskId, lastFile); }
+      const mFile = line.match(/^FILE:\s*(.+)$/);
+      if (mFile && !lastFile) setTaskTitle(taskId, mFile[1].trim());
+
+      if (/error/i.test(line)) sawError = line;
+      pushLog(line, /error|ERROR/i.test(line) ? 'err' : 'dim', taskId);
+    };
+
+    proc.stdout.on('data', (buf) => decodeOut(buf).split(/[\r\n]+/).forEach(handle));
+    proc.stderr.on('data', (buf) => decodeOut(buf).split(/[\r\n]+/).forEach(handle));
+
+    proc.on('error', (e) => {
+      pushLog('直链下载错误: ' + e, 'err', taskId);
+      resolve({ ok: false, msg: String(e) });
+    });
+    proc.on('close', (code) => {
+      if (cancelledTasks.has(taskId)) return resolve({ ok: false, msg: '已取消' });
+      if (code === 0) {
+        pushLog('>>> 下载完成' + (lastFile ? ': ' + lastFile : ''), 'ok', taskId);
+        resolve({ ok: true, file: lastFile });
+      } else {
+        resolve({ ok: false, msg: sawError || ('aria2 退出码 ' + code) });
+      }
+    });
+  });
+}
+
+// 解析 aria2 的进度读数行，返回 {percent, detail} 或 null。
+// 实际输出有两种形态（随版本/选项略有差异，都覆盖）：
+//   [#1bc0e0 1.2GiB/3.2GiB(37%) CN:16 DL:8.5MiB ETA:4m12s]
+//   [#1 SIZE:1.2MiB/3.2GiB(0%) CN:16 DL:5.2MiB ETA:10m]
+function parseAriaProgress(line) {
+  const pct = line.match(/\((\d+)%\)/);
+  if (!pct) return null;
+  const bits = [];
+  const size = line.match(/SIZE:([^\s\]]+)/) || line.match(/\s([\d.]+[A-Za-z]*\/[\d.]+[A-Za-z]*)\(/);
+  if (size) bits.push(size[1]);
+  const sp = line.match(/DL:([^\s\]]+)/);
+  if (sp) bits.push(sp[1] + '/s');
+  const eta = line.match(/ETA:([^\s\]]+)/);
+  if (eta) bits.push('剩余 ' + eta[1]);
+  return { percent: parseInt(pct[1], 10), detail: bits.join(' · ') };
+}
+
+/* yt-dlp 输出到 stdout 时会把无法编码的字符替换掉 —— 实测含 emoji 的视频标题
+ * （如 "KYRIE IRVING RETURNS! 🔥 17 Points..."）在它的输出里 emoji 变成了空格，
+ * 于是它报告的路径和实际落盘的文件名不一致（实测 od -c 确认：stdout 里就是两个空格字节，
+ * 而磁盘上的文件名带完整 emoji）。后果是下载后的「属性 / 播放 / 打开目录」，以及
+ * 紧接着的 probeFile 核对分辨率，全都指向一个不存在的文件 —— 表现为三个按钮齐挂、
+ * 队列行也不显示「降为 30fps」（因为读不到帧率）。
+ *
+ * 这里做一次校正：报告路径存在就直接用；不存在就去下载目录里找「忽略非字母数字后完全相同」
+ * 的那个文件，取修改时间最新的（避免撞上旧的同名文件）。文件本身没毛病，只是我们手上的名字
+ * 少了个 emoji —— 所以不动文件名，只修正引用。
+ */
+function resolveActualFile(folder, reported) {
+  const p = String(reported || '');
+  if (!p) return p;
+  if (fs.existsSync(p)) return p;      // 绝大多数情况：路径正确，直接返回
+
+  try {
+    const dir = folder || path.dirname(p);
+    // 只保留字母/数字再比小写：emoji、空格、中英标点全部忽略
+    const key = (s) => String(s).replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
+    const wantKey = key(path.basename(p));
+    if (!wantKey) return p;
+
+    let best = '';
+    let bestTime = 0;
+    for (const f of fs.readdirSync(dir)) {
+      if (/\.(part|ytdl|temp)$/i.test(f)) continue;   // 跳过未完成的中间文件
+      if (key(f) !== wantKey) continue;
+      const fp = path.join(dir, f);
+      const mt = fs.statSync(fp).mtimeMs;
+      if (mt > bestTime) { bestTime = mt; best = fp; }
+    }
+    if (best) return best;
+  } catch (e) { /* 目录读不到就原样返回，交给上层报错 */ }
+  return p;
+}
+
 // 单个任务的完整下载流程。所有状态都通过 taskId 归属到具体任务。
 async function downloadWorker(url, folder, quality, fps, pMode, proxy, taskId, source) {
+  // 直链是另一套内核（aria2），参数体系与 yt-dlp 完全不同，先分流
+  if (source === 'direct') return await downloadDirectWorker(url, folder, pMode, proxy, taskId);
+
   const ytdlp = findYtdlpKernel();
   if (!ytdlp) {
     pushLog('错误：未找到下载内核 tools/yt-dlp.exe', 'err', taskId);
@@ -1295,17 +1732,13 @@ async function downloadWorker(url, folder, quality, fps, pMode, proxy, taskId, s
 
   const isSocial = source === 'social';
 
-  // 社媒站固定取平台最高画质（前端也只传「原画」），不做帧率转换
+  // 社媒站固定取平台最高画质（前端也只传「原画」）
   const fmt = isSocial ? SOCIAL_FMT : (QUALITY[quality] || QUALITY['4K']);
-  let fmtArg = fmt;
-  if (!isSocial && (fps === '30' || fps === '24')) {
-    if (fmt.includes('+') && fmt.includes('/')) {
-      const bvPart = fmt.split('+')[0];
-      const baPart = fmt.split('/')[0].split('+')[1];
-      fmtArg = `${bvPart}[fps<=${fps}]+${baPart}[fps<=${fps}]/${fmt}`;
-    }
-    pushLog(`>>> 帧率模式: 优先下载 ${fps}fps 原版流`, 'dim', taskId);
-  }
+  // 注：以前这里有个「帧率」选项，会拼 [fps<=30] 去挑平台的低帧率流。
+  // 实测证明这是个坑 —— YouTube 的高清档（720p 以上）对 60fps 源只提供 60fps 版本，
+  // 加了 [fps<=30] 筛选会一路往下匹配到 480p，清晰度暴跌而日志毫无提示。
+  // 现已改为「下载完成后在队列里手动转 30 帧」（见 convert_fps30）。
+  const fmtArg = fmt;
 
   const template = path.join(folder, '%(title)s.%(ext)s');
   const args = ['-o', template, '-f', fmtArg, '--merge-output-format', 'mkv', '--no-update', '--newline'];
@@ -1398,26 +1831,43 @@ async function downloadWorker(url, folder, quality, fps, pMode, proxy, taskId, s
         '请到「设置 → 浏览器 Cookies」选一个已登录过该站点的浏览器。', 'warn', taskId);
     }
   } else if (cached) {
-    plan = cached.cookies
-      ? [{ withCookies: true, cappedClient: !!cached.capped, label: '（按上次成功记录带 cookies）' }]
-      : [{ withCookies: false, label: '（按上次成功记录，不带 cookies）' }];
-    // 缓存说"带 cookies 但没动用备用客户端"，而当前 PO Token 又不可用 —— 补一步兜底，
-    // 否则会退化成 360p（证明过：不带备用客户端时年龄限制视频各客户端只给 338）
-    if (cached.cookies && !hasPot && !cached.capped) {
-      plan.push({ withCookies: true, cappedClient: true, label: '（备用客户端兜底）' });
+    if (cached.cookies && cached.auth === true) {
+      // 上次确实是鉴权失败才需要 cookies —— 直接沿用，省一轮等待
+      plan = [{ withCookies: true, label: '（按上次成功记录带 cookies）' }];
+      pushLog('>>> 命中缓存：该链接上次因鉴权需要 cookies，直接沿用', 'dim', taskId);
+    } else if (cached.cookies) {
+      // 上次用过 cookies，但**不是**鉴权原因（旧版缓存没有 auth 字段也走这里）——
+      // 先不带 cookies 重试一遍。实测（2026-10-14）：普通视频带 cookies 只剩 360p，
+      // 不带能拿 4K，所以这一步实际上是在把被误压掉的清晰度拿回来。
+      plan = [
+        { withCookies: false, label: '（缓存记录曾用 cookies，但并非鉴权原因，先不带重试）' },
+        { withCookies: true, label: '（带浏览器 cookies 重试）' },
+      ];
+      pushLog('>>> 缓存显示曾用 cookies，但上次并非鉴权失败 —— 先不带 cookies 试，' +
+        '避免清晰度被压到 360p', 'warn', taskId);
+    } else {
+      plan = [{ withCookies: false, label: '（按上次成功记录，不带 cookies）' }];
+      pushLog('>>> 命中缓存：该链接上次无需 cookies，直接沿用', 'dim', taskId);
     }
-    pushLog('>>> 命中缓存：该链接上次' + (cached.cookies ? '需要' : '无需') + ' cookies'
-      + (cached.capped ? '，且需要备用客户端' : '') + '，直接沿用', 'dim', taskId);
   } else {
     plan = [
       { withCookies: false, label: '（不带 cookies）' },
-      // cappedClient 不写死：留给下一轮根据"上一轮是不是鉴权失败"动态决定
+      // cappedClient 不用在这里指定 —— 只要某一轮带 cookies，下载时会自动配上
+      // web_safari,tv（否则会被 SABR 压到 360p，见下面 cappedClient 的注释）
       { withCookies: true, label: '（带浏览器 cookies 重试）' },
     ];
   }
 
+  // 兜底（2026-10-14 补）：YouTube 上带 cookies 时会配 web_safari,tv ——
+  // 实测这是唯一能避免被 SABR 压到 360p 的办法。但万一某个视频在这个客户端下
+  // **一个视频格式都拿不到**，就会从"以前还能下 360p"变成"直接下载失败"。
+  // 所以再挂一轮"退回默认客户端"：宁可清晰度低，也不能让本来能下的变成下不了。
+  if (!isSocial && plan.length && plan[plan.length - 1].withCookies) {
+    plan.push({ withCookies: true, cappedClient: false, label: '（退回默认客户端兜底）' });
+  }
+
   let lastFile = '';
-  let lastAuthFail = false;   // 上一轮是否因鉴权失败（决定要不要动用封顶客户端）
+  let lastAuthFail = false;   // 上一轮是否因鉴权失败（决定"需要 cookies"要不要写进缓存）
   for (const step of plan) {
     // 关键：被「取消/停止全部」掐断后不能再开新一轮 —— 否则杀掉进程的下一刻
     // 又拉起一个新下载，用户看到的是"点了停止但还在下"。
@@ -1426,14 +1876,14 @@ async function downloadWorker(url, folder, quality, fps, pMode, proxy, taskId, s
       return { ok: false, msg: '已取消' };
     }
 
-    // 封顶客户端（web_safari,tv）会把清晰度压到 1080p 级，只在两种情况用：
-    //   ① 缓存明确记录上次需要它；② 上一轮是鉴权失败（年龄限制/需登录）——
-    //      这种情况默认客户端只给 360p，只能靠它。
-    // 但**只要 PO Token 可用就不用它** —— 有 token 时默认客户端能直接拿到 4K，
-    // 用封顶客户端反而把 4K 压成 1080p（实测同一视频 3840×2026 → 1920×1012）。
-    // 封顶客户端是 YouTube 的 player_client 参数，社媒站不能用
-    const cappedClient = !isSocial && step.withCookies && !hasPot
-      && (step.cappedClient === true || lastAuthFail);
+    // 在 YouTube 上「只要用了 cookies」就必须换客户端（2026-10-14 实测结论）：
+    //   带 cookies + 默认客户端 → 只剩 360p（账号级 SABR 实验，日志里会出现
+    //   web_embedded "missing a URL" 警告）；换成 web_creator,web_safari,tv →
+    //   4K 视频能拿 3840×2160、1080p 视频拿 1920×1080（详见 clientArgs 的注释）。
+    // ⚠️ PO Token 救不了这种情况 —— token 的价值在于"不带 cookies"时让默认客户端
+    //    拿到 4K；一旦带上 cookies，默认客户端照样被压到 360p。
+    // step.cappedClient === false 是兜底轮（见下面 plan 末尾那步），专门退回默认客户端。
+    const cappedClient = !isSocial && step.withCookies && step.cappedClient !== false;
 
     const r = await runYtdlp({
       ytdlp, args, cwdEnv, withCookies: step.withCookies, cappedClient,
@@ -1441,8 +1891,12 @@ async function downloadWorker(url, folder, quality, fps, pMode, proxy, taskId, s
       url, taskId,
     });
     if (r.code === 0) {
-      lastFile = r.lastFile;
-      setCached(key, step.withCookies, cappedClient);
+      // yt-dlp 报告的路径可能因输出编码丢失字符（含 emoji 的标题会变成空格），
+      // 先校正成磁盘上真实存在的文件，否则后续属性/播放/定位/核对分辨率全都会失败
+      lastFile = resolveActualFile(folder, r.lastFile);
+      // 只有"上一轮确实因鉴权失败、且本次是靠 cookies 才成功"才记为需要 cookies；
+      // 其它情况一律记 auth=false，下次会先不带 cookies 试（见 setCached 注释）
+      setCached(key, step.withCookies, lastAuthFail);
       pushLog('>>> 下载完成 ✓', 'ok', taskId);
       if (lastFile) pushLog('>>> 文件: ' + lastFile, 'ok', taskId);
       sendProgress({ taskId, state: 'done', percent: 100, detail: '完成', file: lastFile });
@@ -1700,7 +2154,7 @@ async function runImageJob(job) {
 
 // 选图片（多选）
 ipcMain.handle('pick_images', async () => {
-  const r = await dialog.showOpenDialog(mainWindow, {
+  const r = await openDialogRemembered(mainWindow, 'images', {
     title: '选择要压缩的图片',
     filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'avif', 'tif', 'tiff', 'gif', 'bmp'] }],
     properties: ['openFile', 'multiSelections'],
@@ -1712,7 +2166,7 @@ ipcMain.handle('pick_images', async () => {
 
 // 选文件夹后把里面的图片都收集出来（可含子目录）
 ipcMain.handle('collect_images', async (e, recursive) => {
-  const r = await dialog.showOpenDialog(mainWindow, {
+  const r = await openDialogRemembered(mainWindow, 'image_dir', {
     title: '选择图片所在文件夹',
     properties: ['openDirectory'],
   });
@@ -1850,13 +2304,20 @@ function probeVideo(file) {
       const dm = pick(/\bDuration:/).match(/Duration:\s*(\d+):(\d+):([\d.]+)/);
       const duration = dm ? (+dm[1]) * 3600 + (+dm[2]) * 60 + parseFloat(dm[3]) : 0;
 
+      // 总码率：Duration 行末尾的 "bitrate: 6794 kb/s"
+      const dmLine = pick(/\bDuration:/);
+      const totalBr = (dmLine.match(/bitrate:\s*(\d+)\s*kb\/s/) || [])[1] || '';
+
       const vLine = pick(/Stream #[\d:]+.*?Video:/);
       const vres = vLine.match(/(\d{2,5})x(\d{2,5})/);
       const vcodec = (vLine.match(/Video:\s*([A-Za-z0-9_]+)/) || [])[1] || '';
       const vfps = (vLine.match(/([\d.]+)\s*fps/) || [])[1] || '';
+      // 视频流自己的码率（有些容器不写，那就空着）
+      const vBr = (vLine.match(/(\d+)\s*kb\/s/) || [])[1] || '';
 
       const aLine = pick(/Stream #[\d:]+.*?Audio:/);
       const acodec = (aLine.match(/Audio:\s*([A-Za-z0-9_]+)/) || [])[1] || '';
+      const aBr = (aLine.match(/(\d+)\s*kb\/s/) || [])[1] || '';
 
       const nStreams = lines.filter((l) => /Stream #[\d:]+/.test(l)).length;
       const hasSub = lines.some((l) => /Stream #[\d:]+.*?Subtitle:/.test(l));
@@ -1870,10 +2331,126 @@ function probeVideo(file) {
         fps: vfps ? Math.round(parseFloat(vfps) * 100) / 100 : 0,
         streams: nStreams,
         hasSub,
+        // 码率统一用 bps 存（便于计算）。视频流码率优先，读不到就留 0，
+        // 由调用方按「总码率 - 音频」估算（见 estimateVideoBitrate）。
+        bitrate: totalBr ? +totalBr * 1000 : 0,
+        vbitrate: vBr ? +vBr * 1000 : 0,
+        abitrate: aBr ? +aBr * 1000 : 0,
       });
     });
   });
 }
+
+// ---------- 视频合并：探测与兼容性判定 ----------
+// 比 probeVideo 多要三样东西：**像素格式**、**视频轨时间基(tbn)**、**有没有音轨**。
+// 这三项直接决定"能不能不重新编码就拼起来"，缺任何一个都可能拼出坏文件：
+//   · 时间基不同 → concat 不会报错，但第二段时间戳从 0 重来 → 时长错、播放跳（实测踩过）
+//   · 音轨有无不同 → 滤镜模式直接报 "Stream specifier ':a' ... matches no streams"
+//   · 编码/分辨率/像素格式不同 → 只能重编码
+function probeForMerge(file) {
+  return new Promise((resolve) => {
+    const ff = getFfmpeg();
+    if (!ff) return resolve(null);
+    const p = spawn(ff, ['-hide_banner', '-i', file], { windowsHide: true });
+    let buf = '';
+    const onData = (b) => { buf += decodeOut(b); };
+    p.stdout.on('data', onData);
+    p.stderr.on('data', onData);
+    p.on('error', () => resolve(null));
+    p.on('close', () => {
+      const lines = buf.split(/\r?\n/);
+      const pick = (re) => lines.find((l) => re.test(l)) || '';
+
+      const dm = pick(/\bDuration:/).match(/Duration:\s*(\d+):(\d+):([\d.]+)/);
+      const duration = dm ? (+dm[1]) * 3600 + (+dm[2]) * 60 + parseFloat(dm[3]) : 0;
+
+      const vLine = pick(/Stream #[\d:]+.*?Video:/);
+      const vcodec = (vLine.match(/Video:\s*([A-Za-z0-9_]+)/) || [])[1] || '';
+      const res = vLine.match(/(\d{2,5})x(\d{2,5})/);
+      // 像素格式紧挨在分辨率前面，可能带括号补充（yuv420p(tv, progressive) / yuv420p10le(tv, bt2020nc/...)）。
+      // 前面锚上 [,\s] 是为了别从 "yuv420p" 中间开始匹配出 "uv420p"。
+      const pf = vLine.match(/[,\s]([a-z][a-z0-9_]{2,})(?:\([^)]*\))?,\s*\d{2,5}x\d{2,5}/);
+      // 时间基形如 "24k tbn" / "12288 tbn" / "1k tbn"
+      const tb = vLine.match(/([\d.]+)(k?)\s*tbn/);
+      const tbn = tb ? Math.round(parseFloat(tb[1]) * (tb[2] ? 1000 : 1)) : 0;
+      const fps = (vLine.match(/([\d.]+)\s*fps/) || [])[1] || '';
+
+      const aLine = pick(/Stream #[\d:]+.*?Audio:/);
+      const acodec = (aLine.match(/Audio:\s*([A-Za-z0-9_]+)/) || [])[1] || '';
+      const aRate = (aLine.match(/(\d+)\s*Hz/) || [])[1] || '';
+
+      let size = 0;
+      try { size = fs.statSync(file).size; } catch (e) { /* 读不到就按 0 */ }
+
+      resolve({
+        file,
+        name: path.basename(file),
+        duration,
+        vcodec,
+        acodec,
+        width: res ? +res[1] : 0,
+        height: res ? +res[2] : 0,
+        pixFmt: pf ? pf[1] : '',
+        tbn,
+        fps: fps ? Math.round(parseFloat(fps) * 100) / 100 : 0,
+        hasAudio: !!aLine,
+        audioRate: aRate ? +aRate : 0,
+        size,
+      });
+    });
+  });
+}
+
+// 判定这批视频能不能"无损拼接"。返回 problems 里写清每一项不一致，
+// 而不是只丢一个"不能合并"——用户要知道是哪一步卡住，才知道该怎么处理。
+// opts.ignoreAudio：要换掉原声时，音轨有没有/编码是否一致就无所谓了，不必拦
+function checkMergeCompat(infos, opts) {
+  const ignoreAudio = !!(opts && opts.ignoreAudio);
+  const problems = [];
+  const fail = (msg) => { if (!problems.includes(msg)) problems.push(msg); };
+  const uniq = (arr) => [...new Set(arr)];
+
+  const bad = (infos || []).filter((i) => !i || !i.width || !i.vcodec || !i.duration);
+  if (bad.length) {
+    fail('有文件读不出信息：' + bad.map((i) => (i && i.name) || '未知文件').join('、'));
+  }
+  const many = (infos || []).length >= 2;
+  if (!many) fail('至少要选 2 个视频才能合并');
+  if (problems.length) return { ok: false, problems, totalSec: 0, tbn: 0 };
+
+  if (uniq(infos.map((i) => i.vcodec)).length > 1) {
+    fail('视频编码不一致：' + uniq(infos.map((i) => i.vcodec)).join(' / '));
+  }
+  const resSet = uniq(infos.map((i) => i.width + '×' + i.height));
+  if (resSet.length > 1) fail('分辨率不一致：' + resSet.join(' / '));
+  const pfSet = uniq(infos.map((i) => i.pixFmt || '未知'));
+  if (pfSet.length > 1) fail('像素格式不一致：' + pfSet.join(' / '));
+
+  // 音轨：要么全有、要么全无；都有时编码和采样率都要一致（否则流复制不了）
+  const withAudio = infos.filter((i) => i.hasAudio);
+  if (withAudio.length > 0 && withAudio.length < infos.length) {
+    const names = infos.filter((i) => !i.hasAudio).map((i) => i.name).join('、');
+    fail('音轨情况不一致（这些没有声音）：' + names);
+  } else if (withAudio.length === infos.length) {
+    const acSet = uniq(infos.map((i) => i.acodec));
+    if (acSet.length > 1) fail('音频编码不一致：' + acSet.join(' / '));
+    const rateSet = uniq(infos.map((i) => i.audioRate));
+    if (rateSet.length > 1) fail('音频采样率不一致：' + rateSet.map((r) => r + 'Hz').join(' / '));
+  }
+
+  const totalSec = infos.reduce((s, i) => s + i.duration, 0);
+  return {
+    ok: problems.length === 0,
+    problems,
+    totalSec,
+    tbn: Math.max(...infos.map((i) => i.tbn || 0)),
+    tbnSet: uniq(infos.map((i) => i.tbn || 0)),
+  };
+}
+
+// mp4 容器放得下的编码（决定输出用 mp4 还是 mkv）
+const MERGE_MP4_VCODECS = new Set(['h264', 'hevc', 'av1', 'mpeg4', 'vp9']);
+const MERGE_MP4_ACODECS = new Set(['aac', 'mp3', 'opus', 'ac3', 'eac3', 'alac', 'flac']);
 
 // ---------- 视频预览：直接把原片交给 <video>，不做任何转制 ----------
 // 用户明确要求：不浪费时间也不占硬盘，所以这里没有任何"转代理"的路径。
@@ -1890,7 +2467,10 @@ ipcMain.handle('get_video_url', (e, file) => {
 // 在那台缺组件的机器上点开还是放不了，兜底等于没兜住。
 // PotPlayer / VLC / MPV 这三家都**自带解码器**（内含 ffmpeg 软解），谁都不依赖，所以优先找它们。
 //
-// 找法三条路，按可靠性排序：
+// 找法四条路，按可靠性排序：
+//   ⓪ 用户在设置里**手动指定**的播放器 —— 最可靠（见 config.external_player）。
+//      为什么必须有这条：前三条路都可能失效（reg.exe 被安全软件拦、播放器装在冷门目录），
+//      光靠自动检测在某些机器上就是找不到。手动指定是唯一"一定能兜住"的方案。
 //   ① 注册表 App Paths —— 最准，能覆盖"装在 D 盘自定义目录"（本机 PotPlayer 就在 D:\2025soft\）
 //      但它要调用 reg.exe，**有些环境会拦这个程序**（我自己的开发环境就被安全策略拦了，EPERM），
 //      所以它失败时要能安静降级，不能当成"没装"。
@@ -1906,6 +2486,11 @@ const EXTERNAL_PLAYERS = [
       'Program Files\\PotPlayer\\PotPlayerMini64.exe',
       'Program Files (x86)\\DAUM\\PotPlayer\\PotPlayerMini.exe',
       'PotPlayer\\PotPlayerMini64.exe',
+      // 播放器装在数据盘的"软件目录"下很常见，把这类习惯性目录也列上
+      '2025soft\\PotPlayer\\PotPlayerMini64.exe',
+      'Software\\PotPlayer\\PotPlayerMini64.exe',
+      'Programs\\PotPlayer\\PotPlayerMini64.exe',
+      'soft\\PotPlayer\\PotPlayerMini64.exe',
     ],
     userRel: ['Programs\\PotPlayer\\PotPlayerMini64.exe'],
   },
@@ -1916,13 +2501,24 @@ const EXTERNAL_PLAYERS = [
       'Program Files\\VideoLAN\\VLC\\vlc.exe',
       'Program Files (x86)\\VideoLAN\\VLC\\vlc.exe',
       'VideoLAN\\VLC\\vlc.exe',
+      '2025soft\\VLC\\vlc.exe',
+      'Software\\VLC\\vlc.exe',
+      'Programs\\VideoLAN\\VLC\\vlc.exe',
+      'soft\\VLC\\vlc.exe',
     ],
     userRel: ['Programs\\VideoLAN\\VLC\\vlc.exe'],
   },
   {
     name: 'MPV',
     exes: ['mpv.exe'],
-    rel: ['Program Files\\mpv\\mpv.exe', 'mpv\\mpv.exe'],
+    rel: [
+      'Program Files\\mpv\\mpv.exe',
+      'mpv\\mpv.exe',
+      '2025soft\\mpv\\mpv.exe',
+      'Software\\mpv\\mpv.exe',
+      'Programs\\mpv\\mpv.exe',
+      'soft\\mpv\\mpv.exe',
+    ],
     userRel: ['Programs\\mpv\\mpv.exe'],
   },
 ];
@@ -1966,19 +2562,104 @@ let externalPlayerCache;    // undefined = 还没查过；null = 查过了但没
 function findExternalPlayer() {
   if (externalPlayerCache !== undefined) return externalPlayerCache;
   externalPlayerCache = null;
+
+  // ⓪ 用户手动指定的优先。**这一条不看文件是否存在就返回** ——
+  //    用户既然显式指了，就照他说的用（他可能指向一个我们没见过的播放器，
+  //    也可能那文件刚好在网盘/移动盘上此刻没挂载，不该替他否决）。
+  //    但路径压根填错时要能发现，所以 existsSync 的结果一并返回给前端做提示。
+  const manual = (cfg.external_player || '').trim();
+  if (manual) {
+    externalPlayerCache = {
+      name: path.basename(manual).replace(/\.exe$/i, ''),
+      path: manual,
+      via: 'manual',
+      exists: fs.existsSync(manual),
+    };
+    return externalPlayerCache;
+  }
+
   for (const p of EXTERNAL_PLAYERS) {
     for (const exe of p.exes) {
       const hit = queryAppPath(exe);      // ① 注册表
-      if (hit) { externalPlayerCache = { name: p.name, path: hit, via: 'registry' }; return externalPlayerCache; }
+      if (hit) { externalPlayerCache = { name: p.name, path: hit, via: 'registry', exists: true }; return externalPlayerCache; }
     }
     for (const f of playerStdPaths(p)) {  // ② 标准路径（多盘符）
       try {
-        if (f && fs.existsSync(f)) { externalPlayerCache = { name: p.name, path: f, via: 'path' }; return externalPlayerCache; }
+        if (f && fs.existsSync(f)) { externalPlayerCache = { name: p.name, path: f, via: 'path', exists: true }; return externalPlayerCache; }
       } catch (e) { /* 路径非法就跳过 */ }
     }
   }
   return externalPlayerCache;
 }
+
+// 用户在设置页改了播放器路径 → 存配置 + **清掉缓存**（否则旧结果会一直用下去）
+ipcMain.handle('set_external_player', (e, p) => {
+  const v = typeof p === 'string' ? p.trim() : '';
+  cfg.external_player = v;
+  saveConfig(cfg);
+  externalPlayerCache = undefined;      // 关键：下次 findExternalPlayer 重新查
+  return v;
+});
+
+// 从磁盘挑可执行文件（给设置页的「浏览」按钮用）
+ipcMain.handle('pick_external_player', async () => {
+  const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+  const r = await openDialogRemembered(win, 'player_exe', {
+    title: '选择播放器程序',
+    properties: ['openFile'],
+    filters: [{ name: '可执行文件', extensions: ['exe'] }],
+  });
+  if (r.canceled || !r.filePaths.length) return '';
+  return r.filePaths[0];
+});
+
+// 玻璃皮肤的背景流体性能档位。改完即存，前端会同步调用 __fluid.setTier 立即生效。
+ipcMain.handle('set_perf_tier', (e, t) => {
+  const v = ['auto', 'high', 'low'].includes(t) ? t : 'auto';
+  cfg.perf_tier = v;
+  saveConfig(cfg);
+  return v;
+});
+
+/* 显卡 / 渲染能力自检 —— 给环境检测页用。
+   回答三个问题：① 显卡是谁 ② 玻璃皮肤的流体背景能不能画 ③ 现在跑在哪个启动档位。
+
+   关于 getGPUFeatureStatus()：它报的是 Chromium 各合成通道的软硬件状态，
+   值域是 enabled / disabled_software / disabled_off 这类字符串，不是布尔。
+   在"关硬件加速"或"GPU 进程起不来"的机器上，这里能看到 disabled_software
+   —— 正好是用户想知道的那件事。取不到就返回空对象，由前端按未知处理。 */
+ipcMain.handle('get_render_caps', async () => {
+  let gpu = {};
+  let features = {};
+  try { gpu = app.getGPUInfo ? await app.getGPUInfo('basic') : {}; } catch (e) { gpu = {}; }
+  try { features = app.getGPUFeatureStatus ? app.getGPUFeatureStatus() : {}; } catch (e) { features = {}; }
+
+  // 从 GPU 信息里挑出我们真会展示的字段，别把整棵树丢给前端
+  const devices = [];
+  try {
+    for (const g of (gpu.gpuDevice || [])) {
+      devices.push({
+        vendor: g.vendorString || g.vendorId || '',
+        device: g.deviceString || g.deviceId || '',
+        driver: g.driverVersion || '',
+      });
+    }
+  } catch (e) { /* 结构对不上就算了 */ }
+
+  return {
+    compatLevel: COMPAT_LEVEL,          // 0 标准 / 1 +no-sandbox / 2 +in-process-gpu / 3 关硬件加速
+    hwDisabled: HW_DISABLED,
+    auxAttributes: (gpu.auxAttributes && gpu.auxAttributes.glRenderer) || '',  // 形如 ANGLE (Intel, ...)
+    devices,
+    // 只挑前端要显示的两项，避免把 Chromium 的十几个通道名全漏出去
+    features: {
+      gpu_compositing: features.gpu_compositing || '',
+      webgl2: features.webgl2 || '',
+      video_decode: features.video_decode || '',
+    },
+    perfTier: cfg.perf_tier || 'auto',
+  };
+});
 
 // 环境检测页和"预览失败"提示都要用：应用内能不能播、外部兜底该找谁
 ipcMain.handle('get_playback_caps', () => {
@@ -1986,9 +2667,13 @@ ipcMain.handle('get_playback_caps', () => {
   return {
     hwDisabled: HW_DISABLED,
     appPreview: !HW_DISABLED,
-    // regBlocked 只是提示"注册表那条路没走通"，不代表没装播放器（路径扫描可能已经找到了）
+    // regBlocked 只是提示"注册表那条路没走通"，不代表没装播放器（路径扫描可能已经找到了）。
+    // ⚠️ 这个字段**只进日志、不上界面** —— 安全软件拦了 reg.exe 是用户环境的事，
+    //    摊在界面上只会让人以为"我的电脑有问题"（见 web/ui/app.js 的渲染逻辑）。
     regBlocked,
-    external: pl ? { name: pl.name, path: pl.path, via: pl.via } : null,
+    external: pl ? { name: pl.name, path: pl.path, via: pl.via, exists: pl.exists !== false } : null,
+    // 用户手填的路径（没填就是空串），设置页要用它回显
+    manualPath: (cfg.external_player || '').trim(),
   };
 });
 
@@ -2172,7 +2857,12 @@ function killVidJob(jobId) {
 }
 
 // 跑一个 ffmpeg 进程，带进度回调。expectedSec 用于把 out_time 折算成百分比。
-function runFfmpegOnce({ ff, args, jobId, taskId, expectedSec, label, onLog }) {
+// progressChannel：进度推到哪个通道。默认 'video-progress'（视频处理页）；
+// 「转 30 帧」用 'fps-progress' 单独一条 —— 否则会和视频处理页的进度条串在一起。
+// extra：附加到每条进度事件里的字段（「转 30 帧」用它带上 file，前端才能对准是哪一行）
+function runFfmpegOnce({ ff, args, jobId, taskId, expectedSec, label, onLog, progressChannel, extra }) {
+  const chan = progressChannel || 'video-progress';
+  const withExtra = (obj) => Object.assign({ jobId }, obj, extra || {});
   return new Promise((resolve) => {
     const full = ['-hide_banner', '-nostats', '-progress', 'pipe:1', ...args];
     onLog(`>>> ${label}`, 'dim', taskId);
@@ -2196,11 +2886,11 @@ function runFfmpegOnce({ ff, args, jobId, taskId, expectedSec, label, onLog }) {
           const pct = Math.max(0, Math.min(100, (cur / expectedSec) * 100));
           if (pct - lastPct >= 0.4) {
             lastPct = pct;
-            sendToRenderer('video-progress', { jobId, percent: pct, detail: `已处理 ${fmtTime(cur)} / ${fmtTime(expectedSec)}` });
+            sendToRenderer(chan, withExtra({ percent: pct, detail: `已处理 ${fmtTime(cur)} / ${fmtTime(expectedSec)}` }));
           }
         }
         if (/^progress=end/.test(t)) {
-          sendToRenderer('video-progress', { jobId, percent: 100, detail: '收尾中…' });
+          sendToRenderer(chan, withExtra({ percent: 100, detail: '收尾中…' }));
         }
       }
     });
@@ -2414,7 +3104,7 @@ async function runVideoJob(job) {
 
 // ---------- 视频处理的 IPC ----------
 ipcMain.handle('pick_videos', async () => {
-  const r = await dialog.showOpenDialog(mainWindow, {
+  const r = await openDialogRemembered(mainWindow, 'videos', {
     title: '选择视频文件',
     filters: [{ name: '视频', extensions: [...VIDEO_EXTS].map((e) => e.slice(1)) }],
     properties: ['openFile', 'multiSelections'],
@@ -2425,7 +3115,7 @@ ipcMain.handle('pick_videos', async () => {
 });
 
 ipcMain.handle('collect_videos', async (e, recursive) => {
-  const r = await dialog.showOpenDialog(mainWindow, {
+  const r = await openDialogRemembered(mainWindow, 'video_dir', {
     title: '选择视频所在文件夹',
     properties: ['openDirectory'],
   });
@@ -2478,6 +3168,751 @@ ipcMain.handle('get_video_caps', () => {
     hwDisabled: HW_DISABLED,
     encoders: Object.keys(VENC).map((k) => ({ key: k, label: VENC[k].label, hw: VENC[k].hw, usable: !VENC[k].hw || !!hw[k] })),
   };
+});
+
+/* ---------- 下载完成后的「转为 30 帧」 ----------
+   为什么要有这个功能：YouTube 的高清档（720p 以上）对 60fps 源视频只提供 60fps 版本，
+   下载时用 [fps<=30] 去挑会一路掉到 480p（实测过，清晰度暴跌）。所以降帧只能放在下载之后做。
+   60fps 是真帧的话，fps=30 就是纯抽帧，零画质损失（实测 PSNR 40.7 dB）；
+   分辨率完全不动，只是帧数减半 —— 送给 Topaz 之类的逐帧处理时能省一半时间。
+   输出新文件（xxx_30fps.<原容器>），绝不覆盖源文件。
+
+   音频处理：优先 -c:a copy（零损失）。但 webm 常见的 opus 塞不进 mp4/mov 容器，
+   所以当「容器与音频编码不兼容」时自动转 aac，否则会产出放不出来的文件。 */
+const FPS_OUT_EXTS = new Set(['.mp4', '.mkv', '.mov', '.webm', '.avi', '.flv', '.ts', '.m4v']);
+
+function audioNeedsAac(srcExt, acodec) {
+  const a = String(acodec || '').toLowerCase();
+  if (!a) return false;
+  // 这些音频编码只能待在 mkv/webm 里，装进 mp4/mov 会不兼容
+  const incompatible = ['opus', 'vorbis'];
+  const isMp4Family = ['.mp4', '.m4v', '.mov'].includes(srcExt);
+  return isMp4Family && incompatible.includes(a);
+}
+
+/* ── 转 30 帧的目标码率怎么定 ──────────────────────────────────────────
+ *
+ * 一开始这里用的是「恒定质量」模式（-cq 22）。实测踩了坑：
+ * 源是 AV1 编码、总码率只有 6.79Mbps 时，重压成 HEVC 为了满足 CQ 22 的
+ * 质量档，编码器一口气给到 20.25Mbps —— 帧数明明减半了，体积却膨胀 3 倍
+ * （64.9MB → 193.4MB）。CQ 模式不管文件大小，源压得越狠、重压涨得越凶。
+ *
+ * 所以改成「按源码率自适应」：源码率本身就是「这段画面需要多少码率」的
+ * 最好证据。降帧后帧数减半，理论上同画质只需约一半码率；再考虑到
+ * AV1 → HEVC 的效率差（HEVC 同画质约需 AV1 的 1.4~1.7 倍），
+ * 两者相抵，目标码率取源码率的若干倍。
+ *
+ * ── 倍数怎么定（2560×1440 / AV1 6.67Mbps 视频流 / 真 60fps 源）
+ * 与「ffv1 无损降帧基准」逐帧比对，全片实测（不是抽帧）：
+ *   倍数   全片体积  相对源   PSNR_avg  PSNR_Y  SSIM_All  SSIM_Y
+ *   0.80    52.3MB   0.85×     37.91     36.43    0.9620    0.9501
+ *   1.00    64.6MB   1.04×     39.04     37.58    0.9691    0.9598
+ *   1.25    77.1MB   1.25×     40.02     38.59    0.9741    0.9668   ← 选它
+ *   1.55    96.2MB   1.55×     41.27     39.87    0.9792    0.9738
+ *   2.05   126.9MB   2.05×     42.85     41.49    0.9843    0.9805
+ *   2.98   193.4MB   2.98×     45.05     43.74    0.9891    0.9868（旧 CQ22，体积失控）
+ *
+ * 选 1.25 的理由：PSNR 40dB 是视频圈公认的「透明级」门槛（多数观看条件下
+ * 看不出与源的区别），此时体积 1.25× 源还在合理范围。再往上收益递减很陡 ——
+ * 1.25→2.05 体积多 65%，只换回 2.8dB；而旧版买到 45dB 的那部分体积里，
+ * 约 130MB 属于「人眼永远用不到」的开销。1.25 是画质与体积的平衡点。
+ *
+ * 上下限兜底：
+ *   - 下限 1.5Mbps：源码率极低的（比如 480p 老视频），别压到糊
+ *   - 上限 20Mbps：源码率极高的（比如 60Mbps 录屏），别转出怪物体积
+ * 注意源可能是 AV1（同画质比 HEVC 省 30~40%），所以码率相同不代表画质相同 ——
+ * 这里的倍数已经把这层换算考虑进去了，不是简单照搬。
+ */
+const FPS_TARGET_RATIO = 1.25;
+const FPS_MIN_BITRATE = 1_500_000;    // 1.5 Mbps
+const FPS_MAX_BITRATE = 20_000_000;   // 20 Mbps
+const DEFAULT_AUDIO_BPS = 128_000;    // 源音频码率读不到时按此估
+
+/** 估算「视频流」码率（优先用视频流自己的，读不到就总码率减音频，音频也没有按 128k 估） */
+function estimateVideoBitrate(info) {
+  if (!info) return 0;
+  const vbr = Number(info.vbitrate) || 0;
+  if (vbr) return vbr;
+  const total = Number(info.bitrate) || 0;
+  if (!total) return 0;
+  const abr = Number(info.abitrate) || DEFAULT_AUDIO_BPS;
+  return Math.max(total - abr, 1);
+}
+
+/** 按源码率算转 30 帧的目标码率；拿不到源码率时返回 0（调用方退回 CQ 模式） */
+function pickFps30Bitrate(info) {
+  const vbr = estimateVideoBitrate(info);
+  if (!vbr) return 0;
+  const target = Math.round(vbr * FPS_TARGET_RATIO);
+  return Math.min(Math.max(target, FPS_MIN_BITRATE), FPS_MAX_BITRATE);
+}
+
+/* 转 30 帧的主流程。抽成独立函数是为了自检脚本能直接调用同一份代码
+   （走 IPC 要跨渲染进程，验证起来更绕）。onLog 可注入，默认写主日志。 */
+async function runFps30Convert(file, logFn) {
+  const f = String(file || '');
+  const onLog = typeof logFn === 'function' ? logFn : (text, cls) => pushLog(text, cls, null, 'video');
+  const ff = getFfmpeg();
+  if (!ff) return { ok: false, msg: '未找到内置 ffmpeg（见「环境检测」页）' };
+  try { fs.statSync(f); } catch (err) { return { ok: false, msg: '源文件读不到了' }; }
+
+  const info = await probeVideo(f);
+  if (!info || !info.duration) return { ok: false, msg: '读不到视频信息，可能不是有效的视频文件' };
+  if (info.fps && info.fps <= 30.5) {
+    return { ok: false, msg: `该视频本来就是 ${info.fps}fps，不需要转换` };
+  }
+
+  const srcExt0 = path.extname(f).toLowerCase();
+  const srcExt = FPS_OUT_EXTS.has(srcExt0) ? srcExt0 : '.mp4';
+  const base = path.basename(f, path.extname(f));
+  const outDir = path.dirname(f);
+  const outPath = uniqueOutPath(outDir, base, '_30fps', srcExt);
+
+  const useAac = audioNeedsAac(srcExt, info.acodec);
+  const jobId = 'fps' + (++vidJobSeq);
+
+  const args = ['-i', f, '-vf', 'fps=30'];
+  // 视频：HEVC NVENC。码率按源码率自适应（见 pickFps30Bitrate 的注释），
+  // 而不是恒定质量 —— 后者遇到 AV1 源会把体积压涨 3 倍。
+  // 万一读不到源码率（少见：老容器没写 bit_rate），退回恒定质量模式兜底。
+  const targetBr = pickFps30Bitrate(info);
+  args.push('-c:v', 'hevc_nvenc', '-preset', 'p6', '-tune', 'hq');
+  if (targetBr) {
+    args.push(
+      '-rc', 'vbr',
+      '-b:v', String(targetBr),
+      // maxrate 给 1.6 倍、bufsize 给 3 倍：允许高动态片段超一点，但整体受控
+      '-maxrate', String(Math.round(targetBr * 1.6)),
+      '-bufsize', String(Math.round(targetBr * 3)),
+    );
+  } else {
+    args.push('-rc', 'vbr', '-cq', '22', '-b:v', '0');
+  }
+  if (useAac) {
+    args.push('-c:a', 'aac', '-b:a', '192k');
+  } else {
+    args.push('-c:a', 'copy');
+  }
+  // HEVC 在 mp4 里要标 hvc1，否则部分播放器/剪辑软件认不出
+  if (srcExt === '.mp4' || srcExt === '.m4v' || srcExt === '.mov') args.push('-tag:v', 'hvc1');
+  args.push('-y', outPath);
+
+  onLog(`>>> 转为 30 帧：${path.basename(f)}（源 ${info.fps}fps，${info.width}×${info.height}）`, 'dim');
+  if (targetBr) {
+    const srcV = Math.round(estimateVideoBitrate(info) / 1000);
+    onLog(`>>> 目标码率 ${(targetBr / 1e6).toFixed(2)} Mbps（按源视频流 ${srcV} kbps 的 ${FPS_TARGET_RATIO} 倍自适应）`, 'dim');
+  } else {
+    onLog('>>> 读不到源码率，退回恒定质量模式（CQ 22）', 'warn');
+  }
+  if (useAac) {
+    onLog(`>>> 源音频是 ${info.acodec}，装不进 ${srcExt} 容器，已自动转为 aac`, 'warn');
+  }
+
+  const r = await runFfmpegOnce({
+    ff, args, jobId, taskId: null, expectedSec: info.duration,
+    label: 'FFmpeg 转为 30fps', onLog, progressChannel: 'fps-progress',
+    extra: { file: f },
+  });
+
+  if (r.code !== 0) {
+    try { fs.unlinkSync(outPath); } catch (_) { /* 没生成就算了 */ }
+    onLog(`>>> 转 30 帧失败：${r.err || ('exit ' + r.code)}`, 'err');
+    sendToRenderer('fps-done', { file: f, ok: false, msg: r.err || ('exit ' + r.code) });
+    return { ok: false, msg: r.err || ('exit ' + r.code) };
+  }
+
+  const after = fs.statSync(outPath);
+  let outFps = 0;
+  try {
+    const oi = await probeVideo(outPath);
+    if (oi) outFps = oi.fps;
+  } catch (_) { /* 读不到就算了，不影响主流程 */ }
+
+  onLog(`>>> 已生成 ${path.basename(outPath)}（${outFps || 30}fps · ${humanSize(after.size)}）`, 'ok');
+  sendToRenderer('fps-done', {
+    file: f, ok: true, out: outPath, outFps: outFps || 30, size: after.size,
+  });
+  return { ok: true, out: outPath, outFps: outFps || 30, size: after.size, bitrate: targetBr };
+}
+
+ipcMain.handle('convert_fps30', (e, file) => runFps30Convert(file));
+
+// ---------- 在线更新 ----------
+// 更新源是「静态地址」：那儿只要有 latest.yml（版本清单）+ 安装包就能工作，不需要任何服务端。
+// 默认指 GitHub Release 的固定入口 —— releases/latest/download 永远指向最新一版，
+// 所以发新版本只要把 exe 和 latest.yml 传上去，地址一个字都不用改。
+// 以后要换到自己的 R2 / CDN，改【这一行】或界面上的「更新源」即可，更新逻辑不用动。
+const DEFAULT_UPDATE_URL = 'https://github.com/jackyzbn-eng/FallenAngels_ytdlp4k/releases/latest/download';
+
+let updaterRef = null;
+let updateState = { phase: 'idle', version: '', percent: 0, detail: '', msg: '' };
+
+function updateFeedUrl() {
+  return (cfg.update_url || '').trim() || DEFAULT_UPDATE_URL;
+}
+
+function pushUpdateState(patch) {
+  updateState = Object.assign({}, updateState, patch || {});
+  sendToRenderer('update-status', Object.assign({
+    currentVersion: app.getVersion(),
+    feedUrl: updateFeedUrl(),
+  }, updateState));
+}
+
+// electron-updater 的报错全是英文网络异常，用户看了只会懵 —— 翻成一句能行动的话
+function updateErrorText(err) {
+  const s = String((err && (err.message || err)) || '');
+  if (/ECONN|ENOTFOUND|ETIMEDOUT|ERR_CONNECTION|ERR_NAME_NOT_RESOLVED|net::/i.test(s)) {
+    return '连不上更新服务器（国内直连 GitHub 通常不通，开着代理再试一次）';
+  }
+  if (/404|latest\.yml|Cannot find/i.test(s)) {
+    return '更新源上没有版本清单 latest.yml —— 这版可能还没上传到发布页';
+  }
+  if (/sha512|checksum/i.test(s)) {
+    return '安装包校验不通过（可能没下完整），重试一次';
+  }
+  return s.length > 160 ? s.slice(0, 160) + '…' : s;
+}
+
+function getUpdater() {
+  if (updaterRef) return updaterRef;
+  let au;
+  try { au = require('electron-updater').autoUpdater; } catch (e) { return null; }
+  updaterRef = au;
+  au.autoDownload = false;            // 先问再下，别在用户不知情时占带宽
+  au.autoInstallOnAppQuit = true;     // 下完没立刻装，退出时顺手装上
+  au.allowPrerelease = false;
+  try { au.logger = null; } catch (e) { /* 关掉它自带的日志输出 */ }
+  try {
+    au.setFeedURL({ provider: 'generic', url: updateFeedUrl() });
+  } catch (e) { /* 设不上就退回构建时写进 app-update.yml 的那份 */ }
+
+  au.on('checking-for-update', () => pushUpdateState({ phase: 'checking', msg: '', percent: 0 }));
+  au.on('update-available', (info) => pushUpdateState({
+    phase: 'available', version: (info && info.version) || '', percent: 0, msg: '',
+  }));
+  au.on('update-not-available', () => pushUpdateState({ phase: 'latest', version: '', percent: 0, msg: '' }));
+  au.on('download-progress', (p) => pushUpdateState({
+    phase: 'downloading',
+    percent: Math.max(0, Math.min(100, (p && p.percent) || 0)),
+    detail: p ? `${humanSize(p.transferred || 0)} / ${humanSize(p.total || 0)}` : '',
+  }));
+  au.on('update-downloaded', (info) => pushUpdateState({
+    phase: 'downloaded', version: (info && info.version) || '', percent: 100,
+  }));
+  au.on('error', (err) => pushUpdateState({ phase: 'error', msg: updateErrorText(err) }));
+  return au;
+}
+
+ipcMain.handle('get_update_state', () => ({
+  currentVersion: app.getVersion(),
+  feedUrl: updateFeedUrl(),
+  custom: (cfg.update_url || '').trim(),   // 用户自己填的（空 = 用默认）
+  packaged: app.isPackaged,
+  state: updateState,
+}));
+
+ipcMain.handle('check_update', async () => {
+  if (!app.isPackaged) {
+    return { ok: false, msg: '开发运行模式下不检查更新（装成安装版后才有意义）' };
+  }
+  const au = getUpdater();
+  if (!au) return { ok: false, msg: '缺少更新模块 electron-updater（这版打包时没装进去）' };
+  try {
+    pushUpdateState({ phase: 'checking', msg: '', percent: 0 });
+    await au.checkForUpdates();
+    return { ok: true, state: updateState };
+  } catch (e) {
+    const m = updateErrorText(e);
+    pushUpdateState({ phase: 'error', msg: m });
+    return { ok: false, msg: m };
+  }
+});
+
+ipcMain.handle('download_update', async () => {
+  const au = getUpdater();
+  if (!au) return { ok: false, msg: '缺少更新模块' };
+  try {
+    await au.downloadUpdate();
+    return { ok: true };
+  } catch (e) {
+    const m = updateErrorText(e);
+    pushUpdateState({ phase: 'error', msg: m });
+    return { ok: false, msg: m };
+  }
+});
+
+// 真正安装：退出应用 → 静默跑新安装包 → 自动启动新版
+ipcMain.handle('install_update', () => {
+  const au = getUpdater();
+  if (!au) return { ok: false, msg: '缺少更新模块' };
+  // 延后一点点，让渲染进程先把"正在重启"的提示画出来
+  setTimeout(() => {
+    try { au.quitAndInstall(false, true); } catch (e) { /* 起不来就留给用户手动装 */ }
+  }, 400);
+  return { ok: true };
+});
+
+// 换更新源（换成自己的 R2/CDN 时用）：存配置 + 清掉已初始化的 updater，下次重新 setFeedURL
+ipcMain.handle('set_update_url', (e, url) => {
+  cfg.update_url = typeof url === 'string' ? url.trim() : '';
+  saveConfig(cfg);
+  updaterRef = null;
+  updateState = { phase: 'idle', version: '', percent: 0, detail: '', msg: '' };
+  return updateFeedUrl();
+});
+
+if (typeof module !== 'undefined' && module.exports) {
+  // 自检脚本用：暴露内部函数以便直接验证同一份代码
+  module.exports.__test = {
+    runFps30Convert, pickFps30Bitrate, estimateVideoBitrate, probeVideo,
+    // 直链下载（aria2）：自检脚本直接跑完整流程，不必走 GUI
+    downloadDirectWorker, parseAriaProgress,
+    // 含 emoji 文件名的路径校正：可独立验证匹配逻辑
+    resolveActualFile,
+    // reportResolution 实际用的核对函数（含路径不存在时的失败分支）
+    probeFile,
+    // 队列重试：自检脚本可直接造任务验证
+    retryTask, tasks,
+    // 配置路径：验证「安装新版不丢设置」的存储位置
+    configPath, dataDir, appDir,
+    // cookies 缓存 + 完整下载流程：验证「带 cookies 被压到 360p」的修复
+    downloadWorker, getCached, setCached, loadCache,
+    sabrDetected, isRetryableAuthError, childLine, sabrNote,
+    // 视频合并：探测 / 兼容性判定 / 完整合并流程
+    probeForMerge, checkMergeCompat, runMergeJob,
+    // 每个浏览按钮各自的路径记忆
+    rememberDir, rememberedDir, loadLastDirs, lastDirsPath,
+  };
+}
+
+// 转码用哪个编码器：优先硬件（快很多），没卡就退软件；AV1 只能硬件，没有就返回空
+function convertEncoderFor(vcodec) {
+  const hw = detectHwEncoders();
+  if (vcodec === 'hevc') return hw.hevc_nv ? 'hevc_nv' : 'hevc_sw';
+  if (vcodec === 'h264') return hw.h264_nv ? 'h264_nv' : 'h264_sw';
+  if (vcodec === 'av1') return hw.av1_nv ? 'av1_nv' : '';
+  return '';
+}
+
+// 选出「多数派规格」，并列出需要转码的段。
+// 为什么按多数派：只转少数派 → 大部分视频仍然逐字节原样拷贝，画质损失范围最小。
+// 平票时取先出现的那个（顺序稳定，不会今天转 A 明天转 B）。
+function pickConvertTargets(infos) {
+  const keyOf = (i) => [i.vcodec, i.width, i.height, i.pixFmt].join('|');
+  const cnt = new Map();
+  for (const i of infos) cnt.set(keyOf(i), (cnt.get(keyOf(i)) || 0) + 1);
+  let bestKey = '', bestN = -1, bestInfo = null;
+  for (const i of infos) {
+    const k = keyOf(i);
+    const n = cnt.get(k);
+    if (n > bestN) { bestN = n; bestKey = k; bestInfo = i; }
+  }
+  if (!bestInfo) return null;
+  if (!convertEncoderFor(bestInfo.vcodec)) return null;
+  const target = {
+    vcodec: bestInfo.vcodec, width: bestInfo.width, height: bestInfo.height,
+    pixFmt: bestInfo.pixFmt, fps: bestInfo.fps, audioRate: bestInfo.audioRate || 48000,
+  };
+  const idx = [];
+  for (let i = 0; i < infos.length; i++) if (keyOf(infos[i]) !== bestKey) idx.push(i);
+  return { target, idx };
+}
+
+// ---------- 视频合并：无损拼接 ----------
+// 刻意分成三步，每一步都对应一个实测踩过的坑：
+//   ① 时间基对齐（只对 tbn 不一致的文件重封装，流复制不重编码）
+//   ② concat 分配器 + 流复制拼接
+//   ③ 拼完核对时长必须等于各段之和
+// 为什么不能一步 concat+copy 完事：实测两个 mp4 时间基一个 24k、一个 12288，
+// 直接拼会满屏 "Non-monotonic DTS"，**命令还照样成功退出**，但时长只有 76 秒（应为 110 秒）。
+// 这种"静默出错"只能靠第 ③ 步兜住 —— 少了它，用户拿到的就是个看着成功、实际接错的文件。
+async function runMergeJob(job) {
+  const ff = getFfmpeg();
+  // 日志/进度发到哪条通道，由调用方指定 —— 「音视频拼接」页用自己的通道，
+  // 免得和「视频处理」页的进度条互相串（两页可能同时有任务）
+  const chans = job.chans || { progress: 'video-progress', item: 'video-item', done: 'video-done' };
+  const logSrc = job.logSource || 'video';
+  const log = (m, lv) => pushLog(m, lv || 'dim', null, logSrc);
+  const prog = (p, d) => sendToRenderer(chans.progress, { jobId: job.id, percent: p, detail: d });
+  const tmpDir = path.join(os.tmpdir(), 'FA_merge_' + job.id);
+  const temps = [];
+  const cancelled = () => !!job.cancelled;
+
+  // 音轨模式：keep 原样 / add 加背景音乐 / replace 丢掉原声换音乐 / mix 保留原声再叠音乐
+  // ⚠️ add 和 replace 底层命令完全一样（丢掉原音轨 + 加一条音频），差别只在文案：
+  //    源本来就没声音时叫"添加"，本来有声音时叫"替换"。拆成两个选项纯粹是为了让用户看得懂。
+  const opt = job.opt || {};
+  const rawMode = String(opt.audioMode || 'keep');
+  const audioMode = (rawMode === 'replace' || rawMode === 'add') ? 'replace'
+    : (rawMode === 'mix' ? 'mix' : 'keep');
+  const musicPath = audioMode === 'keep' ? '' : String(opt.music || '');
+  const loopMusic = opt.loopMusic !== false;
+  const fadeSec = Math.max(0, Math.min(10, Number(opt.fade) || 0));
+  const musicVol = Math.min(1, Math.max(0.02, Number(opt.musicVol) || 0.3));
+  // 只有用户明确勾了才允许转码 —— 转码会掉一代画质，不能悄悄做
+  const allowConvert = !!opt.allowConvert;
+
+  const cleanup = () => {
+    for (const t of temps) { try { fs.rmSync(t, { force: true }); } catch (e) { /* 忽略 */ } }
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) { /* 忽略 */ }
+  };
+  const bail = (msg, cancelledByUser) => {
+    if (cancelledByUser) {
+      log('>>> 合并已中止', 'warn');
+      sendToRenderer(chans.done, { total: 1, errCount: 1, cancelled: true });
+    } else {
+      log('>>> 合并失败：' + msg, 'err');
+      sendToRenderer(chans.item, { ok: false, name: '合并', msg, done: 1, total: 1 });
+      sendToRenderer(chans.done, { total: 1, errCount: 1, cancelled: false });
+    }
+  };
+
+  try {
+    if (!ff) return bail('未找到内置 ffmpeg');
+    const files = job.files || [];
+    if (!files.length) return bail('没有选择视频');
+    if (files.length === 1 && audioMode === 'keep') {
+      return bail('只选了一个视频、也没选音乐，没什么要处理的');
+    }
+    if (audioMode !== 'keep' && !musicPath) return bail('选了音轨处理，但没有指定音乐文件');
+    try { fs.mkdirSync(tmpDir, { recursive: true }); } catch (e) { /* 已存在 */ }
+
+    prog(0, '读取视频信息…');
+    const infos = [];
+    for (let i = 0; i < files.length; i++) {
+      if (cancelled()) return bail('', true);
+      prog((i / files.length) * 6, `读取信息 (${i + 1}/${files.length})`);
+      const inf = await probeForMerge(files[i]);
+      if (!inf || !inf.duration) return bail('读不出信息：' + path.basename(files[i]));
+      infos.push(inf);
+      log(`>>> [${i + 1}] ${inf.name} · ${inf.width}×${inf.height} · ${inf.vcodec}/${inf.pixFmt} · ` +
+        `${fmtTime(inf.duration)} · ${inf.fps}fps · ` +
+        `${inf.hasAudio ? inf.acodec + ' ' + inf.audioRate + 'Hz' : '无音轨'} · tbn=${inf.tbn}`);
+    }
+
+    // 只有一个视频又要换音轨时，根本不需要拼接 —— 兼容性也不必判（没东西可比）
+    const single = files.length === 1;
+    // 换掉原声时，音轨有没有/编码是否一致就无所谓了，不用拦
+    const chk = (single && audioMode !== 'keep')
+      ? { ok: true, problems: [], totalSec: infos[0].duration, tbn: infos[0].tbn, tbnSet: [infos[0].tbn] }
+      : checkMergeCompat(infos, { ignoreAudio: audioMode === 'replace' });
+
+    let convertTarget = null;
+    let convertIdx = [];
+    if (!chk.ok) {
+      if (!allowConvert) {
+        for (const p of chk.problems) log('>>> 无法无损合并：' + p, 'err');
+        log('>>> 要强行拼就勾选「编码不一致时自动转码不匹配的片段」——只转不一致的那几段，不是全片', 'warn');
+        return bail(chk.problems.join('；'));
+      }
+      const pick = pickConvertTargets(infos);
+      if (!pick) {
+        for (const p of chk.problems) log('>>> 无法合并：' + p, 'err');
+        return bail('编码差异太大，找不到能统一的目标规格（AV1 只能靠硬件编码器）');
+      }
+      // 混音要求每段都有原声 —— 转码不会凭空造出一条音轨
+      if (audioMode === 'mix' && infos.some((i) => !i.hasAudio)) {
+        const noAudio = infos.filter((i) => !i.hasAudio).map((i) => i.name).join('、');
+        return bail('混音需要每段都有原声，但这些没有：' + noAudio + '（改用「去掉原声，换成我的音乐」）');
+      }
+      convertTarget = pick.target;
+      convertIdx = pick.idx;
+      log(`>>> 参数不一致：按「多数派」统一到 ${convertTarget.vcodec} ` +
+        `${convertTarget.width}×${convertTarget.height} ${convertTarget.pixFmt}。` +
+        `只转第 ${convertIdx.map((i) => i + 1).join('、')} 段，其余段仍然逐字节拷贝`, 'warn');
+    }
+
+    // 目标规格：不转码就用第一段的，转码就用「多数派」
+    const spec = convertTarget || {
+      vcodec: infos[0].vcodec, width: infos[0].width, height: infos[0].height,
+      pixFmt: infos[0].pixFmt, fps: infos[0].fps, audioRate: infos[0].audioRate || 48000,
+    };
+    // 换/叠音乐时音频最终都是 aac，容器只看视频编码；原样保留时才要看原音轨
+    const audioOkForMp4 = audioMode !== 'keep'
+      || !infos[0].hasAudio || MERGE_MP4_ACODECS.has(infos[0].acodec);
+    let outExt;
+    if (convertIdx.length) {
+      // 时间基对齐要用 -video_track_timescale，只有 mp4 家族支持
+      if (!MERGE_MP4_VCODECS.has(spec.vcodec)) {
+        return bail('统一后的编码是 ' + spec.vcodec + '，放不进 mp4，无法做无损对齐');
+      }
+      outExt = '.mp4';
+    } else {
+      outExt = (MERGE_MP4_VCODECS.has(spec.vcodec) && audioOkForMp4) ? '.mp4' : '.mkv';
+    }
+    const outDir = opt.outMode === 'custom' && opt.outDir ? opt.outDir : path.dirname(files[0]);
+    const base = path.basename(files[0], path.extname(files[0]));
+    const suffix = audioMode === 'replace' ? '_music' : (audioMode === 'mix' ? '_mix' : '_joined');
+    const outPath = uniqueOutPath(outDir, base, suffix, outExt);
+
+    // 音乐信息（换/叠音乐时才需要）
+    let mi = null;
+    if (audioMode !== 'keep') {
+      prog(7, '读取音乐信息…');
+      mi = await probeForMerge(musicPath);
+      if (!mi || !mi.duration) return bail('音乐文件读不出时长：' + path.basename(musicPath));
+      if (!mi.hasAudio) return bail('这个文件里没有音频流：' + path.basename(musicPath));
+      log(`>>> 音乐: ${path.basename(musicPath)} · ${mi.acodec} ` +
+        `${mi.audioRate ? mi.audioRate + 'Hz · ' : ''}${fmtTime(mi.duration)}` +
+        `${loopMusic ? ' · 循环铺满' : ''}${fadeSec > 0 ? ' · 淡入淡出 ' + fadeSec + 's' : ''}` +
+        `${audioMode === 'mix' ? ' · 叠加音量 ' + Math.round(musicVol * 100) + '%' : ''}`);
+    }
+
+    // ① 先把"规格不一致"的段转成目标规格（只转这几段，其余原样拷贝）
+    const stageFiles = files.slice();
+    let totalSec = chk.totalSec;
+    if (convertIdx.length) {
+      const encKey = convertEncoderFor(spec.vcodec);
+      const tbnHint = String(Math.max(chk.tbn || 0, 24000));
+      for (let n = 0; n < convertIdx.length; n++) {
+        if (cancelled()) return bail('', true);
+        const i = convertIdx[n];
+        const inf = infos[i];
+        prog(8 + (n / convertIdx.length) * 50, `转码第 ${i + 1} 段 (${n + 1}/${convertIdx.length})`);
+        const vf = [];
+        if (inf.width !== spec.width || inf.height !== spec.height) {
+          vf.push(`scale=${spec.width}:${spec.height}:force_original_aspect_ratio=decrease`);
+          vf.push(`pad=${spec.width}:${spec.height}:(ow-iw)/2:(oh-ih)/2`);
+        }
+        if (inf.pixFmt && spec.pixFmt && inf.pixFmt !== spec.pixFmt) vf.push(`format=${spec.pixFmt}`);
+        const cargs = ['-y', '-i', files[i], '-map', '0:v:0', '-map', '0:a?'];
+        if (vf.length) cargs.push('-vf', vf.join(','));
+        cargs.push(...videoEncArgs(encKey, '高'));
+        cargs.push('-c:a', 'aac', '-b:a', '192k', '-ar', String(spec.audioRate), '-ac', '2', '-sn', '-dn');
+        cargs.push('-video_track_timescale', tbnHint);
+        if (spec.vcodec === 'hevc' && outExt !== '.mkv') cargs.push('-tag:v', 'hvc1');
+        const tmp = path.join(tmpDir, `conv_${i + 1}${outExt}`);
+        cargs.push(tmp);
+        log(`>>> 转码第 ${i + 1} 段：${inf.vcodec} ${inf.width}×${inf.height} → ` +
+          `${spec.vcodec} ${spec.width}×${spec.height}（只有这一段掉画质，其余段不受影响）`, 'warn');
+        const r = await runFfmpegOnce({
+          ff, args: cargs, jobId: job.id, expectedSec: inf.duration,
+          label: `转码 ${inf.name}`, onLog: log,
+        });
+        if (r.code !== 0) return bail('转码第 ' + (i + 1) + ' 段失败：' + (r.err || 'exit ' + r.code));
+        temps.push(tmp);
+        stageFiles[i] = tmp;
+      }
+      // 转码产物的 tbn/时长由编码器决定，必须重新探测 —— 否则后面算时间基会错
+      for (const i of convertIdx) {
+        const re = await probeForMerge(stageFiles[i]);
+        if (!re || !re.duration) return bail('转码产物读不出信息（第 ' + (i + 1) + ' 段）');
+        infos[i] = re;
+      }
+      totalSec = infos.reduce((s, i) => s + i.duration, 0);
+    }
+
+    // ② 时间基对齐：只在真不一致时做（每个中间件都要整片重封装一遍，不能白做）
+    const items = [];
+    const tbnNow = [...new Set(infos.map((i) => i.tbn).filter((t) => t > 0))];
+    if (tbnNow.length > 1) {
+      const target = Math.max(...tbnNow);
+      log(`>>> 时间基不一致（${tbnNow.join(' / ')}）→ 先统一到 ${target}，` +
+        `否则拼完时间轴会接不上（这个坑不报错，只会时长变短）`, 'warn');
+      for (let i = 0; i < files.length; i++) {
+        if (cancelled()) return bail('', true);
+        if (infos[i].tbn === target) { items.push(stageFiles[i]); continue; }
+        if (outExt === '.mkv') {
+          return bail('时间基不一致，但输出是 mkv（不支持指定时间基），无法无损对齐');
+        }
+        const tmp = path.join(tmpDir, `align_${i + 1}${outExt}`);
+        prog(60 + (i / files.length) * 20, `对齐时间基 (${i + 1}/${files.length})`);
+        const r = await runFfmpegOnce({
+          ff,
+          args: ['-y', '-i', stageFiles[i], '-map', '0:v:0', '-map', '0:a?',
+            '-c', 'copy', '-sn', '-dn', '-video_track_timescale', String(target), tmp],
+          jobId: job.id, expectedSec: infos[i].duration,
+          label: `对齐 ${infos[i].name}`, onLog: log,
+        });
+        if (r.code !== 0) return bail('对齐时间基失败：' + (r.err || 'exit ' + r.code));
+        temps.push(tmp);
+        items.push(tmp);
+      }
+    } else {
+      log('>>> 时间基一致，直接拼接');
+      items.push(...stageFiles);
+    }
+    if (cancelled()) return bail('', true);
+
+    // ③ 拼接（流复制）。只有 1 段时跳过，直接进音轨处理
+    const needAudioPass = audioMode !== 'keep';
+    let srcPath = '';
+    if (files.length > 1) {
+      const stagePath = needAudioPass ? path.join(tmpDir, 'stage' + outExt) : outPath;
+      const listPath = path.join(tmpDir, 'list.txt');
+      const esc = (p) => String(p).replace(/'/g, "'\\''");
+      fs.writeFileSync(listPath, items.map((p) => `file '${esc(p)}'`).join('\n') + '\n', 'utf8');
+
+      prog(82, '拼接中…');
+      const cargs = ['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy'];
+      if (/\.(mp4|m4v|mov)$/i.test(outExt)) cargs.push('-movflags', '+faststart');
+      if (spec.vcodec === 'hevc' && outExt !== '.mkv') cargs.push('-tag:v', 'hvc1');
+      cargs.push(stagePath);
+      const rc = await runFfmpegOnce({
+        ff, args: cargs, jobId: job.id, expectedSec: totalSec,
+        label: '拼接（流复制，不动画质）', onLog: log,
+      });
+      if (rc.code !== 0) return bail('拼接失败：' + (rc.err || 'exit ' + rc.code));
+      if (cancelled()) return bail('', true);
+      if (needAudioPass) temps.push(stagePath);
+      srcPath = stagePath;
+    } else {
+      srcPath = stageFiles[0];
+      log('>>> 只有 1 个视频，跳过拼接，直接处理音轨');
+    }
+
+    // ④ 音轨处理：视频一律 -c:v copy（画质逐字节不变），只有音频会重编码
+    if (needAudioPass) {
+      prog(90, audioMode === 'replace' ? '替换音轨…' : '叠加音乐…');
+      // ⚠️ -shortest 只在"音乐会无限循环"或"音乐比视频长"时才加。
+      //    否则会把视频裁短到音乐长度 —— 用户会莫名其妙少一段，这个坑很隐蔽。
+      const needShortest = loopMusic || (mi && mi.duration >= totalSec);
+      const fadeIn = fadeSec > 0 ? `afade=t=in:st=0:d=${fadeSec}` : '';
+      const fadeOut = fadeSec > 0
+        ? `afade=t=out:st=${Math.max(0, totalSec - fadeSec).toFixed(3)}:d=${fadeSec}` : '';
+      const fadeChain = [fadeIn, fadeOut].filter(Boolean).join(',');
+      const mIn = loopMusic ? ['-stream_loop', '-1', '-i', musicPath] : ['-i', musicPath];
+
+      // 混音要求原声存在；没有就自动退化成"直接加入音乐"
+      if (audioMode === 'mix' && !infos[0].hasAudio) {
+        log('>>> 源视频本来就没有原声，混音退化成"直接加入音乐"', 'warn');
+      }
+      const doReplace = audioMode === 'replace' || !infos[0].hasAudio;
+
+      let aargs;
+      if (doReplace) {
+        // 去掉原声不需要额外操作：显式 -map 只点名一个音频流，其余原音轨自然被丢弃
+        aargs = ['-y', '-i', srcPath, ...mIn, '-map', '0:v:0', '-map', '1:a:0'];
+        if (fadeChain) aargs.push('-af', fadeChain);
+        aargs.push('-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k');
+      } else {
+        // 保留原声 + 叠加：normalize=0 保证旁白不被自动压小，音量全靠 musicVol 控制
+        const chain = (fadeChain ? `[1:a]${fadeChain},` : '[1:a]') +
+          `volume=${musicVol.toFixed(2)}[m];` +
+          `[0:a][m]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]`;
+        aargs = ['-y', '-i', srcPath, ...mIn, '-filter_complex', chain,
+          '-map', '0:v:0', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k'];
+      }
+      if (needShortest) aargs.push('-shortest');
+      if (/\.(mp4|m4v|mov)$/i.test(outExt)) aargs.push('-movflags', '+faststart');
+      if (spec.vcodec === 'hevc' && outExt !== '.mkv') aargs.push('-tag:v', 'hvc1');
+      aargs.push(outPath);
+      const ra = await runFfmpegOnce({
+        ff, args: aargs, jobId: job.id, expectedSec: totalSec,
+        label: doReplace ? '换音乐（视频流复制）' : '叠加音乐（视频流复制）', onLog: log,
+      });
+      if (ra.code !== 0) return bail('音轨处理失败：' + (ra.err || 'exit ' + ra.code));
+      if (cancelled()) return bail('', true);
+    }
+
+    // ⑤ 核对时长 —— 必须等于各段之和
+    prog(96, '校验时长…');
+    const got = await probeForMerge(outPath);
+    if (!got || !got.duration) return bail('产物读不出时长，可能没写成功');
+    const diff = Math.abs(got.duration - totalSec);
+    if (diff > Math.max(0.5, totalSec * 0.01)) {
+      return bail(`拼接后时长 ${fmtTime(got.duration)} 与预期 ${fmtTime(totalSec)} 不符（差 ${diff.toFixed(2)} 秒）`);
+    }
+
+    // 体积对比用磁盘上的原始文件（infos 里转码段的 size 已经是临时文件的了）
+    const before = files.reduce((s, f) => {
+      try { return s + fs.statSync(f).size; } catch (e) { return s; }
+    }, 0);
+    const after = (() => { try { return fs.statSync(outPath).size; } catch (e) { return 0; } })();
+    prog(100, '完成');
+    const what = audioMode === 'keep' ? '拼接'
+      : (audioMode === 'replace'
+        ? (rawMode === 'add' ? '拼接 + 加背景音乐' : '拼接 + 换音乐')
+        : '拼接 + 叠加音乐');
+    log(`>>> ${what}完成 ✓ ${got.width}×${got.height} · ${fmtTime(got.duration)}` +
+      `（= ${infos.map((i) => fmtTime(i.duration)).join(' + ')}）`, 'ok');
+    log(`>>> 音轨: ${got.hasAudio ? got.acodec + (got.audioRate ? ' ' + got.audioRate + 'Hz' : '') : '无'}` +
+      (convertIdx.length ? ` · 第 ${convertIdx.map((i) => i + 1).join('、')} 段被转码` : ' · 视频全程未重编码'), 'dim');
+    log('>>> 文件: ' + outPath, 'ok');
+    sendToRenderer(chans.item, {
+      ok: true, name: path.basename(outPath), outPath, file: outPath,
+      before, after, grew: false, done: 1, total: 1,
+    });
+    sendToRenderer(chans.done, { total: 1, okCount: 1, errCount: 0, cancelled: false });
+  } catch (e) {
+    bail(String((e && e.message) || e));
+  } finally {
+    cleanup();
+    vidJobs.delete(job.id);
+  }
+}
+
+// 选完文件后先探一遍，界面据此显示"能不能无损拼接 / 如果需要转码会转哪几段"
+// opts.audioMode = keep|replace|mix —— replace 时不要求各段音轨一致
+ipcMain.handle('probe_merge_files', async (e, files, opts) => {
+  const o = opts || {};
+  const list = (files || []).slice(0, 50);
+  const infos = [];
+  for (const f of list) infos.push(await probeForMerge(String(f)));
+  const compat = checkMergeCompat(infos, { ignoreAudio: o.audioMode === 'replace' || o.audioMode === 'add' });
+  // 不能无损时，先算一下"允许转码的话会转哪几段"，界面好把话说在前面
+  let convert = null;
+  if (!compat.ok && infos.length >= 2 && infos.every((i) => i && i.duration)) {
+    const pick = pickConvertTargets(infos);
+    if (pick) convert = { target: pick.target, idx: pick.idx };
+  }
+  return { ok: true, infos, compat, convert };
+});
+
+// 选音乐文件
+const AUDIO_EXTS = new Set(['.mp3', '.m4a', '.aac', '.wav', '.flac', '.ogg', '.opus', '.wma', '.aif', '.aiff']);
+ipcMain.handle('pick_audio', async () => {
+  const r = await openDialogRemembered(mainWindow, 'audio', {
+    title: '选择音乐文件',
+    filters: [{ name: '音频', extensions: [...AUDIO_EXTS].map((x) => x.slice(1)) }],
+    properties: ['openFile'],
+  });
+  if (r.canceled || !r.filePaths.length) return { ok: false, file: '' };
+  return { ok: true, file: r.filePaths[0] };
+});
+
+ipcMain.handle('probe_audio', async (e, file) => {
+  const inf = await probeForMerge(String(file || ''));
+  if (!inf || !inf.duration || !inf.hasAudio) return { ok: false, msg: '这个文件里没有音频流' };
+  return { ok: true, info: inf };
+});
+
+// 「音视频拼接」页的入口。跟视频处理页共用 vidJobs 注册表 ——
+// 所以「停止」直接复用 stop_video_job / killVidJob，不用另写一套。
+ipcMain.handle('start_compose_job', (e, params) => {
+  const p = params || {};
+  const files = (p.files || []).filter(Boolean);
+  if (!files.length) return { ok: false, msg: '没有选择视频' };
+  if (!getFfmpeg()) return { ok: false, msg: '未找到内置 ffmpeg（见「环境检测」页）' };
+
+  const audioMode = (p.audioMode === 'replace' || p.audioMode === 'add' || p.audioMode === 'mix')
+    ? p.audioMode : 'keep';
+  if (audioMode !== 'keep' && !p.music) return { ok: false, msg: '请先选择音乐文件' };
+  if (files.length === 1 && audioMode === 'keep') {
+    return { ok: false, msg: '只选了一个视频、也没选音乐，没什么要处理的' };
+  }
+  if (p.outMode === 'custom' && !p.outDir) return { ok: false, msg: '请先选择输出文件夹' };
+
+  const opt = {
+    audioMode,
+    music: p.music || '',
+    loopMusic: p.loopMusic !== false,
+    fade: Number(p.fade) || 0,
+    musicVol: Number(p.musicVol) || 0.3,
+    allowConvert: !!p.allowConvert,
+    outMode: p.outMode || 'same',
+    outDir: p.outDir || '',
+  };
+  const id = 'mg' + (++vidJobSeq);
+  const job = {
+    id, files: files.slice(), opt, cancelled: false,
+    logSource: 'compose',
+    chans: { progress: 'compose-progress', item: 'compose-item', done: 'compose-done' },
+  };
+  vidJobs.set(id, job);
+  runMergeJob(job);
+  return { ok: true, jobId: id, total: 1 };
 });
 
 ipcMain.handle('start_video_job', (e, params) => {
@@ -2543,10 +3978,272 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-// 退出前的收尾。注意：预览不做转制，所以这里没有"清预览缓存"的事（临时目录压根不会产生）。
+/* 退出前的收尾。
+   ⚠️ 这里**故意不**去 dispose 页面里的 WebGL（流体渲染器）。
+   曾经因为退出看到退出码 139（segfault），以为是"WebGL 上下文没释放"，于是在
+   before-quit 里 preventDefault + await 页面 dispose() + app.exit(0)。
+   结果：139 依然在，而且**新增**了别的不稳定 —— 对照实验（最小窗口 + 流体照跑 +
+   同一套清理流程）三种模式全部 EXIT=0，把清理块摘掉后主程序也回到 0。
+   结论：段错是我自己那套"拦截退出"的写法引入的，WebGL 本身退出干净。
+   代价说明：Electron 在 in-process-gpu 下拆渲染进程时，rAF 里正在跑的 WebGL
+   循环由 Chromium 自己负责回收，用户点关闭是**同步**走完的，实测无崩溃。
+   所以：别再往这里加"退出前通知页面"的逻辑，那只会把干净的退出路径搞脏。
+   正常退出要撤掉"启动中"标记，否则下次启动会被误判成"上次崩了"而降级到兼容模式
+   （用户开完应用秒关就会踩到，实测过）*/
+/* ============ 封面图下载（侧边栏「下载封面图」页） ============
+   用途：给一个视频链接，把它的封面（缩略图）原图存下来 —— 做封面参考、
+      上传平台时当封面、收集素材这类事。
+
+   实现要点（每条都是摸索出来的，别随手改）：
+
+   ① **必须让 yt-dlp 自己下载，不能自己拿 URL 去 fetch。**
+      B站 / 微博这类站点的封面有防盗链（校验 Referer / UA），
+      自己 HTTP GET 会拿到 403 或一张"防盗图"；yt-dlp 内部会给每个站点
+      带上正确的 http_headers，所以交给它最稳，也最通用。
+
+   ② `--skip-download --write-thumbnail`：只写封面、不下视频本体。
+      实测 yt-dlp 只写**最佳那一张**（YouTube 上是 1920×1080 的 maxresdefault），
+      不会把几十张不同尺寸的缩略图全灌下来。
+
+   ③ 文件名走 `-o %(title)s.%(ext)s` 模板，用视频标题命名。
+      yt-dlp 自己会清洗标题里的非法字符（\ / : * ? " < > |），不用我们操心。
+
+   ④ **保持原格式、不转码**：YouTube 给 webp、多数站给 jpg。
+      封面是拿来用的素材，多一次有损编码不划算（用户 2026-09-29 拍板）。
+      所以**不要**顺手加 --convert-thumbnails。
+
+   ⑤ 站点通用：任何 yt-dlp 支持的站走同一套，代码里不写死 YouTube 的字段。
+
+   ⑥ 拿不到封面时**不算失败**：纯音频、少数站点本来就没有缩略图，
+      标成"跳过"并说明，不要让整批任务因为一个链接报错中断。
+
+   ⑦ 不启用 PO Token：那是为了解 YouTube 高清晰度视频流的（要起 Node、加载插件、
+      每次白等几秒）。封面只是个图片 URL，用不上，启用只会拖慢。
+      真正需要的是 **JS 运行时**（deno）—— YouTube 现在解析元数据要做 JS 挑战，
+      没有它连缩略图 URL 都拿不到。
+*/
+const COVER_CONCURRENCY = 3;
+let coverJobSeq = 0;
+const coverJobs = new Map();
+
+// 从 yt-dlp 输出里抠出封面落盘路径。
+// 成功时会打印： [info] Writing video thumbnail 41 to: D:\...\标题.webp
+function parseCoverPath(line) {
+  const m = line.match(/Writing video thumbnail \d+ to: (.+)$/);
+  return m ? m[1].trim() : '';
+}
+
+// 从封面路径反推标题（去掉扩展名）。用于界面显示"下到了什么"。
+function coverTitleFromPath(p) {
+  try { return path.basename(p).replace(/\.[^.]+$/, ''); } catch (e) { return ''; }
+}
+
+// 单个链接下封面。withCookies=true 用于会员 / 年龄限制这类需要登录态的视频。
+function fetchOneCover(job, url, withCookies) {
+  return new Promise((resolve) => {
+    const ytdlp = findYtdlpKernel();
+    if (!ytdlp) {
+      resolve({ ok: false, msg: '未找到下载内核 tools/yt-dlp.exe' });
+      return;
+    }
+
+    const args = [
+      '--skip-download', '--write-thumbnail',
+      '--no-update', '--newline',
+      '-o', path.join(job.dir, '%(title)s.%(ext)s'),
+    ];
+
+    // ffmpeg：yt-dlp 处理部分站点的封面时要用（项目自带，不指望用户装过）
+    const ffmpeg = findTool('ffmpeg');
+    if (ffmpeg) args.push('--ffmpeg-location', path.dirname(ffmpeg));
+
+    // JS 运行时：YouTube 解析元数据要做 JS 挑战，缺了直接拿不到缩略图 URL
+    const rt = findJsRuntime();
+    if (rt) args.push('--js-runtimes', `${rt.name}:${rt.path}`);
+
+    // 代理：与下载页同一套口径（手动 / 直连 / 跟随系统）
+    const pMode = cfg.proxy_mode || 'system';
+    const proxyP = (async () => {
+      if (pMode === 'manual' && cfg.proxy) return cfg.proxy;
+      if (pMode === 'direct') return '';
+      const sp = await getSystemProxy();
+      return sp.url || '';
+    })();
+
+    proxyP.then((proxyUrl) => {
+      if (proxyUrl) args.push('--proxy', proxyUrl);
+      else if (pMode === 'direct') args.push('--proxy', '');
+
+      if (withCookies) {
+        const ca = cookieArgs();
+        if (ca.length) args.push(...ca);
+      }
+      args.push('--', url);
+
+      // PyInstaller 打包的 yt-dlp.exe 需要 TEMP/TMP 才能自解包（同下载页的兜底）
+      const cwdEnv = {
+        ...process.env,
+        PYTHONIOENCODING: 'utf-8',
+        TEMP: process.env.TEMP || os.tmpdir(),
+        TMP: process.env.TMP || os.tmpdir(),
+      };
+
+      let coverPath = '';
+      let errLine = '';
+      let authFail = false;
+
+      const proc = spawn(ytdlp, args, { windowsHide: true, env: cwdEnv });
+      job.procs.add(proc);
+
+      const onLine = (line) => {
+        const p = parseCoverPath(line);
+        if (p) { coverPath = p; return; }
+        if (isRetryableAuthError(line)) authFail = true;
+        // 只有出错的行值得写进日志；正常行太吵（一堆 downloading / extracting）
+        if (/ERROR|error/i.test(line)) errLine = line.replace(/^ERROR:\s*/, '');
+      };
+
+      proc.stdout.on('data', (buf) => {
+        for (const raw of decodeOut(buf).split(/[\r\n]+/)) {
+          const line = raw.trim();
+          if (line) onLine(line);
+        }
+      });
+      proc.stderr.on('data', (buf) => {
+        const t = decodeOut(buf).trim();
+        if (t) for (const raw of t.split(/[\r\n]+/)) {
+          const line = raw.trim();
+          if (line) onLine(line);
+        }
+      });
+      proc.on('error', (e) => {
+        job.procs.delete(proc);
+        resolve({ ok: false, msg: '启动下载内核失败: ' + e });
+      });
+      proc.on('close', (code) => {
+        job.procs.delete(proc);
+        if (code === 0) {
+          if (coverPath) resolve({ ok: true, file: coverPath, title: coverTitleFromPath(coverPath) });
+          // 正常退出但没写文件 = 这个视频本身没有封面（不是错误）
+          else resolve({ ok: false, nocover: true, msg: '该视频没有封面' });
+          return;
+        }
+        resolve({ ok: false, authFail, msg: errLine || ('yt-dlp 退出码 ' + code) });
+      });
+    }).catch((e) => {
+      resolve({ ok: false, msg: '处理代理设置失败: ' + ((e && e.message) || e) });
+    });
+  });
+}
+
+// 整批任务。并发 3（与下载页一致），可中止。
+async function runCoverJob(job) {
+  let idx = 0;
+  let okCount = 0, failCount = 0, skipCount = 0;
+  const doneItems = [];
+
+  const worker = async () => {
+    while (!job.cancelled) {
+      const i = idx++;
+      if (i >= job.urls.length) return;
+      const url = job.urls[i];
+
+      if (job.cancelled) return;
+
+      // 两轮：先不带 cookies；上一轮是鉴权失败才带 cookies 重试。
+      // 公开视频绝大多数第一轮就成，不必为它白读一次 cookies 库。
+      let res = await fetchOneCover(job, url, false);
+      if (!res.ok && !res.nocover && res.authFail && !job.cancelled) {
+        pushLog('需要登录态，带 cookies 重试: ' + url.slice(0, 60), 'dim', null, 'cover');
+        res = await fetchOneCover(job, url, true);
+      }
+
+      if (job.cancelled) return;
+
+      if (res.ok) okCount++;
+      else if (res.nocover) skipCount++;
+      else failCount++;
+
+      const doneCount = okCount + failCount + skipCount;
+      const item = {
+        index: i + 1,
+        total: job.urls.length,
+        // 进度按"已完成数"算而不是 index —— 并发 3 时完成顺序是乱的，
+        // 用 index 会让进度条来回跳
+        done: doneCount,
+        url,
+        ok: !!res.ok,
+        nocover: !!res.nocover,
+        title: res.title || '',
+        file: res.file || '',
+        msg: res.msg || '',
+      };
+      doneItems.push(item);
+      sendToRenderer('cover-item', item);
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(COVER_CONCURRENCY, job.urls.length) }, worker));
+
+  sendToRenderer('cover-done', {
+    id: job.id,
+    cancelled: !!job.cancelled,
+    total: job.urls.length,
+    okCount, failCount, skipCount,
+    items: doneItems,
+  });
+  pushLog(`>>> 封面下载结束：成功 ${okCount} · 跳过 ${skipCount} · 失败 ${failCount}` +
+    (job.cancelled ? '（已中止）' : ''), job.cancelled ? 'warn' : 'ok', null, 'cover');
+  coverJobs.delete(job.id);
+}
+
+// 封面保存目录（选目录用现成的 pick_folder，这里只负责存）
+ipcMain.handle('save_cover_dir', (e, dir) => {
+  cfg.cover_dir = String(dir || '').trim();
+  saveConfig(cfg);
+  return cfg.cover_dir;
+});
+
+ipcMain.handle('start_cover_job', (e, params) => {
+  const dir = String((params && params.dir) || '').trim();
+  if (!dir) return { ok: false, msg: '请先选择封面保存目录' };
+  try { fs.accessSync(dir); } catch (err) { return { ok: false, msg: '保存目录不存在: ' + dir }; }
+
+  // 链接清洗：按行 / 空格 / 逗号切；去重；只留 http(s) 开头的
+  const raw = String((params && params.urls) || '');
+  const seen = new Set();
+  const urls = [];
+  for (const piece of raw.split(/[\s,，]+/)) {
+    const u = piece.trim();
+    if (!/^https?:\/\//i.test(u)) continue;
+    if (seen.has(u)) continue;   // 同一批里重复粘贴的只下一次
+    seen.add(u);
+    urls.push(u);
+  }
+  if (!urls.length) return { ok: false, msg: '没有识别到有效链接（需要以 http:// 或 https:// 开头）' };
+
+  const id = 'cover' + (++coverJobSeq);
+  const job = { id, urls, dir, cancelled: false, procs: new Set() };
+  coverJobs.set(id, job);
+
+  pushLog(`>>> 开始下载 ${urls.length} 个封面 → ${dir}`, 'dim', null, 'cover');
+  runCoverJob(job);   // 不 await：立刻把 jobId 还给界面
+  return { ok: true, jobId: id, total: urls.length };
+});
+
+ipcMain.handle('stop_cover_job', (e, jobId) => {
+  const job = coverJobs.get(jobId);
+  if (!job) return { ok: false, msg: '任务已结束' };
+  job.cancelled = true;
+  // Windows 上 yt-dlp 会拉起子进程，必须连树一起杀，否则变孤儿继续占资源
+  for (const p of job.procs) {
+    try { spawn('taskkill', ['/PID', String(p.pid), '/T', '/F'], { windowsHide: true }); } catch (err) { /* 忽略 */ }
+  }
+  pushLog('>>> 正在中止封面下载…', 'warn', null, 'cover');
+  return { ok: true };
+});
+
 app.on('will-quit', () => {
-  // 正常退出要撤掉"启动中"标记，否则下次启动会被误判成"上次崩了"而降级到兼容模式
-  // （用户开完应用秒关就会踩到，实测过）
   try { fs.unlinkSync(startFlagPath()); } catch (e) { /* 本来就没有 */ }
   // 早期版本会在这里清 fallen-angels-preview；转制方案已在 2.13.0 移除，
   // 留一行兜底把可能残留的老目录扫掉

@@ -1,6 +1,6 @@
 {
   "name": "fallen-angels",
-  "version": "2.15.0",
+  "version": "2.20.0",
   "description": "Fallen Angels - YouTube 4K 视频下载器（Electron 版）",
   "main": "main.js",
   "scripts": {
@@ -16,6 +16,11 @@
   "build": {
     "appId": "com.fallenangels.app",
     "productName": "Fallen Angels",
+    "disableAsarIntegrity": true,
+    "publish": {
+      "provider": "generic",
+      "url": "https://github.com/jackyzbn-eng/FallenAngels_ytdlp4k/releases/latest/download"
+    },
     "directories": {
       "output": "dist"
     },
@@ -71,6 +76,7 @@
     "afterPack": "./afterPack.js"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "sharp": "^0.35.4"
   }
 }

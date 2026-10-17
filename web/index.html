@@ -7,6 +7,9 @@
 <title>Fallen Angels</title>
 </head>
 <body class="theme-dark-linear">
+<!-- 流体背景层：玻璃皮肤用它画流体壁纸（WebGL2），其余皮肤下不显示。
+     放在 .app 之前、z-index 压在内容下面，这样面板的 backdrop-filter 才能模糊到它。 -->
+<canvas id="fluid-bg"></canvas>
 <div class="app">
   <!-- 侧边栏 -->
   <aside class="sidebar">
@@ -14,8 +17,11 @@
     <div class="brand-version" id="app-version"></div>
     <div class="nav-item active" data-page="yt"><span class="dot"></span>油管下载</div>
     <div class="nav-item" data-page="social"><span class="dot"></span>社媒视频下载</div>
+    <div class="nav-item" data-page="direct"><span class="dot"></span>直链下载</div>
     <div class="nav-item" data-page="image"><span class="dot"></span>图片压缩</div>
+    <div class="nav-item" data-page="cover"><span class="dot"></span>下载封面图</div>
     <div class="nav-item" data-page="video"><span class="dot"></span>视频处理</div>
+    <div class="nav-item" data-page="compose"><span class="dot"></span>音视频拼接</div>
     <div class="nav-item" data-page="env"><span class="dot"></span>环境检测</div>
     <div class="nav-item" data-page="settings"><span class="dot"></span>设置</div>
   </aside>
@@ -38,14 +44,10 @@
 
       <div class="card">
         <div class="card-title">画质</div>
-        <div class="card-sub">分辨率高于视频实际时自动降级；帧率优先下载原版流</div>
+        <div class="card-sub">分辨率高于视频实际时自动降级；下载完成可在队列里转为 30 帧</div>
         <div class="row">
           <span class="row-label">分辨率</span>
           <div id="quality-opts" class="row" style="margin-top:0;gap:18px"></div>
-        </div>
-        <div class="row">
-          <span class="row-label">帧率</span>
-          <div id="fps-opts" class="row" style="margin-top:0;gap:18px"></div>
         </div>
       </div>
 
@@ -156,6 +158,72 @@
       </div><!-- /.page-bottom -->
     </section>
 
+    <!-- ========== 直链下载页 ========== -->
+    <section class="page dl-page" id="page-direct" style="display:none">
+      <div class="page-scroll">
+      <div class="page-title">直链下载</div>
+      <div class="page-sub">粘贴 http/https 文件直链（网盘、素材站、CDN 等），用 aria2 多线程分段下载</div>
+
+      <div class="card">
+        <div class="card-title">说明</div>
+        <div class="card-sub">
+          本页用的是另一个内核（aria2），专治普通文件直链：16 线程分段 + 断点续传，
+          几个 GB 的大文件也能吃满带宽。油管/社媒页那套解析器在这里不参与。
+        </div>
+        <div class="card-sub" style="margin-top:8px">
+          服务器支持 Range 请求时分段才有效；不支持会自动退回单线程，不会报错。
+        </div>
+        <div class="card-sub" style="margin-top:8px">
+          部分站点国内直连会被拦（表现为 502 / 连接被重置），遇到下载失败先到「设置」页确认代理。
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">保存目录 <span class="pill add-dir" data-src="direct">＋ 添加分类</span></div>
+        <div class="card-sub">直链专用分类，与油管/社媒页各存各的、互不影响</div>
+        <div class="dir-list" data-src="direct"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">文件直链 <span class="pill" id="direct-btn-paste">从剪贴板粘贴</span></div>
+        <div class="card-sub" id="direct-url-hint">支持批量：一行一个链接，也可用空格或逗号分隔；必须是 http/https 开头的文件直链</div>
+        <textarea class="input textarea" id="direct-url" rows="3"
+          placeholder="https://example.com/bigfile.zip&#10;https://cdn.example.com/path/to/file.iso"></textarea>
+      </div>
+      </div><!-- /.page-scroll -->
+
+      <!-- 本页专属底栏：与其它页完全分开，互不干扰 -->
+      <div class="page-bottom">
+      <div class="card" id="task-card-direct" hidden>
+        <div class="card-title">
+          直链队列
+          <span class="pill ghost-pill" id="btn-clear-finished-direct">清除已完成</span>
+          <span class="pill danger-pill" id="btn-stop-all-direct">停止全部</span>
+        </div>
+        <div id="task-list-direct"></div>
+      </div>
+
+      <div class="progress-wrap" id="progress-wrap-direct" hidden>
+        <div class="progress-bar">
+          <div class="progress-fill" id="progress-fill-direct"></div>
+        </div>
+        <div class="progress-info">
+          <span id="progress-percent-direct">0%</span>
+          <span id="progress-detail-direct"></span>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btn" id="btn-download-direct">加入队列</button>
+        <button class="btn ghost" id="btn-copy-log-direct">复制日志</button>
+        <button class="btn ghost" id="btn-clear-log-direct">清空日志</button>
+        <span class="status" id="download-status-direct">就绪</span>
+      </div>
+
+      <div class="log" id="log-direct"></div>
+      </div><!-- /.page-bottom -->
+    </section>
+
     <!-- ========== 图片压缩页 ========== -->
     <section class="page dl-page" id="page-image" style="display:none">
       <div class="page-scroll">
@@ -232,6 +300,62 @@
       </div>
 
       <div class="log" id="log-img"></div>
+      </div><!-- /.page-bottom -->
+    </section>
+
+    <!-- ========== 下载封面图页 ========== -->
+    <section class="page dl-page" id="page-cover" style="display:none">
+      <div class="page-scroll">
+      <div class="page-title">下载封面图</div>
+      <div class="page-sub">粘贴视频链接，把它的封面原图存下来（油管、B站、微博等 yt-dlp 能解析的站点都行）</div>
+
+      <div class="card">
+        <div class="card-title">保存目录</div>
+        <div class="card-sub">封面统一存到这里，跟视频、图片分开，不会混在一起</div>
+        <div class="row">
+          <input class="input grow readonly" id="cover-dir" readonly placeholder="尚未选择保存目录">
+          <button class="btn ghost" id="cover-pick-dir">浏览</button>
+          <button class="btn ghost" id="cover-open-dir">打开</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">视频链接 <span class="pill" id="cover-paste">从剪贴板粘贴</span></div>
+        <div class="card-sub">一行一个链接，也可用空格或逗号分隔；重复的会自动去重</div>
+        <textarea class="input textarea" id="cover-urls" rows="4"
+          placeholder="https://www.youtube.com/watch?v=…&#10;https://www.bilibili.com/video/…"></textarea>
+      </div>
+
+      <div class="card">
+        <div class="card-title">说明</div>
+        <div class="card-sub">
+          下载的是<strong>原始封面图</strong>，保持站点给的格式不改（油管是 webp，多数站是 jpg），不重新压缩。
+          文件用视频标题命名。会员限定、年龄限制的视频会复用「设置 → 浏览器 Cookies」里的登录态。
+        </div>
+      </div>
+
+      </div><!-- /.page-scroll -->
+
+      <div class="page-bottom">
+      <div class="progress-wrap" id="cover-progress-wrap" hidden>
+        <div class="progress-bar">
+          <div class="progress-fill" id="cover-progress-fill"></div>
+        </div>
+        <div class="progress-info">
+          <span id="cover-progress-percent">0%</span>
+          <span id="cover-progress-detail"></span>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btn" id="cover-start">下载封面</button>
+        <button class="btn ghost" id="cover-stop" disabled>停止</button>
+        <button class="btn ghost" id="cover-copy-log">复制日志</button>
+        <button class="btn ghost" id="cover-clear-log">清空日志</button>
+        <span class="status" id="cover-status">就绪</span>
+      </div>
+
+      <div class="log" id="log-cover"></div>
       </div><!-- /.page-bottom -->
     </section>
 
@@ -400,6 +524,111 @@
       </div><!-- /.page-bottom -->
     </section>
 
+    <!-- ========== 音视频拼接页（内部标识仍叫 compose） ========== -->
+    <section class="page dl-page" id="page-compose" style="display:none">
+      <div class="page-scroll">
+      <div class="page-title">音视频拼接</div>
+      <div class="page-sub">
+        把多个视频无损拼成一整条；并可按需处理音轨（保留原样 / 添加音乐 / 换掉原声 / 叠加音乐）。
+        视频流一律不重新编码。
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          视频（按顺序拼接）
+          <span class="pill" id="cmp-pick-files">添加视频</span>
+        </div>
+        <div class="card-sub">
+          按从上到下的顺序拼接。只选一个视频也行 —— 那就是"只换音轨、不拼接"。
+        </div>
+        <div class="row">
+          <button class="btn ghost" id="cmp-pick-dir">选择文件夹</button>
+          <button class="btn ghost" id="cmp-clear">清空列表</button>
+          <span class="row-label" id="cmp-count" style="width:auto">尚未选择视频</span>
+        </div>
+        <div id="cmp-list" style="margin-top:8px"></div>
+        <div class="card-sub" id="cmp-compat"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">背景音乐</div>
+        <div id="cmp-audio-opts" class="row" style="margin-top:0;gap:18px"></div>
+        <div class="card-sub" id="cmp-audio-hint"></div>
+        <div class="row" id="cmp-music-row" hidden>
+          <input class="input grow readonly" id="cmp-music" readonly placeholder="未选择音乐文件">
+          <button class="btn ghost" id="cmp-play-music" disabled>▶ 试听</button>
+          <button class="btn ghost" id="cmp-pick-music">选择音乐…</button>
+        </div>
+        <div class="card-sub" id="cmp-music-info"></div>
+        <div class="row" id="cmp-music-tweaks" hidden>
+          <label class="row-label" style="width:auto"><input type="checkbox" id="cmp-loop" checked> 循环铺满整片</label>
+          <label class="row-label" style="width:auto"><input type="checkbox" id="cmp-fade" checked> 淡入淡出</label>
+          <span class="row-label" style="width:auto" id="cmp-vol-label">音乐音量</span>
+          <input type="range" id="cmp-vol" min="5" max="100" step="5" value="35" style="width:120px">
+          <span class="row-label" style="width:auto" id="cmp-vol-text">35%</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">参数不一致时</div>
+        <div class="row">
+          <label class="row-label" style="width:auto">
+            <input type="checkbox" id="cmp-convert"> 自动转码不匹配的片段
+          </label>
+        </div>
+        <div class="card-sub">
+          编码 / 分辨率 / 像素格式不一致时，无损拼接做不到。勾上之后只会把「不一致的那几段」
+          转成多数派的规格，其余段仍然逐字节拷贝 —— 不是全片重编码。
+          代价是被转的那几段会掉一代画质，日志里会点名是哪几段。
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">输出到</div>
+        <div class="row">
+          <div id="cmp-out-opts" class="row" style="margin-top:0;gap:16px"></div>
+        </div>
+        <div class="row" id="cmp-outdir-row" hidden>
+          <input class="input grow readonly" id="cmp-outdir" readonly placeholder="未选择输出文件夹">
+          <button class="btn ghost" id="cmp-pick-outdir">浏览</button>
+        </div>
+        <div class="card-sub">
+          文件名后缀：_joined（纯拼接）/ _music（换音乐）/ _mix（叠加音乐）；重名自动加序号，绝不覆盖源文件。
+        </div>
+      </div>
+
+      <div class="card" id="cmp-result-card" hidden>
+        <div class="card-title">
+          处理结果
+          <span class="pill ghost-pill" id="cmp-clear-result">清空结果</span>
+        </div>
+        <div class="queue-summary" id="cmp-summary"></div>
+        <div id="cmp-result-list"></div>
+      </div>
+      </div><!-- /.page-scroll -->
+
+      <div class="page-bottom">
+      <div class="progress-wrap" id="cmp-progress-wrap" hidden>
+        <div class="progress-bar">
+          <div class="progress-fill" id="cmp-progress-fill"></div>
+        </div>
+        <div class="progress-info">
+          <span id="cmp-progress-percent">0%</span>
+          <span id="cmp-progress-detail"></span>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btn" id="cmp-btn-start">开始处理</button>
+        <button class="btn ghost" id="cmp-stop" disabled>停止</button>
+        <button class="btn ghost" id="cmp-open-out" disabled>打开输出目录</button>
+        <span class="status" id="cmp-status">就绪</span>
+      </div>
+
+      <div class="log" id="log-compose"></div>
+      </div><!-- /.page-bottom -->
+    </section>
+
     <!-- ========== 环境检测页 ========== -->
     <section class="page" id="page-env" style="display:none">
       <div class="page-title">环境检测</div>
@@ -415,6 +644,14 @@
       <div class="card">
         <div class="card-title">视频播放能力</div>
         <div id="playback-list"></div>
+      </div>
+
+      <!-- 玻璃皮肤的背景流体靠显卡画，老机器上会自己降级。这一卡把"降没降、为什么降"
+           摊开讲清楚，免得用户以为是自己设置错了。 -->
+      <div class="card">
+        <div class="card-title">显卡与渲染能力</div>
+        <div class="card-sub">决定玻璃皮肤的背景流体能不能流畅绘制，以及视频预览是否由显卡硬解</div>
+        <div id="render-list"></div>
       </div>
 
       <div class="actions">
@@ -433,6 +670,15 @@
         <div class="card-title">主题皮肤</div>
         <div class="card-sub">切换整套配色与质感，随皮肤一起记住你的选择</div>
         <div class="skin-grid" id="skin-grid"></div>
+        <!-- 只有玻璃皮肤吃 GPU，别的皮肤下这行整个隐藏（见 app.js 的 syncPerfTierUI） -->
+        <div id="perf-tier-block" style="display:none">
+          <div class="card-sub" style="margin-top:14px">玻璃皮肤的背景是一层实时流体，由显卡绘制。老电脑、核显或远程桌面下可以让它画得省一点。</div>
+          <div class="row" style="margin-top:8px">
+            <span class="row-label" style="width:auto;white-space:nowrap">性能档位</span>
+            <div id="perf-opts" class="row" style="margin-top:0;gap:16px"></div>
+            <span class="row-label" id="perf-tier-hint" style="width:auto"></span>
+          </div>
+        </div>
       </div>
 
       <div class="card">
@@ -462,10 +708,58 @@
         </div>
         <div class="card-sub" id="cookies-guide" style="margin-top:10px" hidden></div>
       </div>
+
+      <div class="card">
+        <div class="card-title">视频播放</div>
+        <div class="card-sub">应用内放不出来的视频（缺解码器、编码不支持）会交给外部播放器打开</div>
+        <div class="row">
+          <span class="row-label" style="width:auto;white-space:nowrap">播放器路径</span>
+          <input class="input" id="player-path" style="width:340px" placeholder="留空 = 自动查找（PotPlayer / VLC / MPV）">
+          <button class="btn ghost" id="btn-pick-player">浏览…</button>
+          <button class="btn ghost" id="btn-clear-player">清除</button>
+        </div>
+        <div class="card-sub" id="player-hint" style="margin-top:10px"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          软件更新
+          <span class="pill ghost-pill" id="upd-check">检查更新</span>
+        </div>
+        <div class="card-sub">
+          当前版本 <span id="upd-current">—</span>
+          <span id="upd-status"></span>
+        </div>
+        <div class="progress-wrap" id="upd-progress-wrap" hidden>
+          <div class="progress-bar">
+            <div class="progress-fill" id="upd-progress-fill"></div>
+          </div>
+          <div class="progress-info">
+            <span id="upd-progress-percent">0%</span>
+            <span id="upd-progress-detail"></span>
+          </div>
+        </div>
+        <div class="row" id="upd-actions" hidden>
+          <button class="btn" id="upd-download">下载更新</button>
+          <button class="btn ghost" id="upd-install" hidden>立即重启安装</button>
+          <button class="btn ghost" id="upd-page">打开发布页</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <span class="row-label" style="width:auto;white-space:nowrap">更新源</span>
+          <input class="input grow" id="upd-feed" placeholder="留空 = 默认（GitHub Release）">
+          <button class="btn ghost" id="upd-save-feed">保存</button>
+        </div>
+        <div class="card-sub">
+          版本清单从更新源取（那儿只要有 latest.yml + 安装包就行，不需要服务器）。
+          默认走 GitHub 发布页，国内直连常常不通 —— 那时开着代理再点。
+          想换更快的地址（比如自己的对象存储），改上面「更新源」保存即可。
+        </div>
+      </div>
     </section>
   </main>
 </div>
 
+<script src="ui/fluid.js"></script>
 <script src="ui/app.js"></script>
 
 <!-- 文件属性弹窗（用内置 ffprobe 读取） -->

@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld('api', {
   copy_text: (text) => ipcRenderer.invoke('copy_text', text),
   read_clipboard: () => ipcRenderer.invoke('read_clipboard'),
   open_file: (filePath) => ipcRenderer.invoke('open_file', filePath),
+  open_url: (url) => ipcRenderer.invoke('open_url', url),
+  preview_file: (filePath) => ipcRenderer.invoke('preview_file', filePath),
   show_in_folder: (filePath) => ipcRenderer.invoke('show_in_folder', filePath),
   probe_file: (filePath) => ipcRenderer.invoke('probe_file', filePath),
   get_components: () => ipcRenderer.invoke('get_components'),
@@ -26,6 +28,7 @@ contextBridge.exposeInMainWorld('api', {
   get_tasks: () => ipcRenderer.invoke('get_tasks'),
   stop_all: (source) => ipcRenderer.invoke('stop_all', source),
   cancel_task: (id) => ipcRenderer.invoke('cancel_task', id),
+  retry_task: (id) => ipcRenderer.invoke('retry_task', id),
   clear_finished: (source) => ipcRenderer.invoke('clear_finished', source),
 
   // ---- 图片压缩 ----
@@ -54,16 +57,54 @@ contextBridge.exposeInMainWorld('api', {
   collect_videos: (recursive) => ipcRenderer.invoke('collect_videos', recursive),
   expand_video_paths: (paths) => ipcRenderer.invoke('expand_video_paths', paths),
   probe_video: (file) => ipcRenderer.invoke('probe_video', file),
+  probe_merge_files: (files, opts) => ipcRenderer.invoke('probe_merge_files', files, opts),
+  pick_audio: () => ipcRenderer.invoke('pick_audio'),
+  probe_audio: (file) => ipcRenderer.invoke('probe_audio', file),
+  start_compose_job: (params) => ipcRenderer.invoke('start_compose_job', params),
   get_video_caps: () => ipcRenderer.invoke('get_video_caps'),
+  // 视频处理页的设置（模式/画质/编码器/切点）。主进程早就有这个 handler，
+  // 但 preload 一直漏了桥接 —— 结果切点、编码器这些设置从来没存下来过。
+  save_video_settings: (s) => ipcRenderer.invoke('save_video_settings', s),
   start_video_job: (params) => ipcRenderer.invoke('start_video_job', params),
   stop_video_job: (jobId) => ipcRenderer.invoke('stop_video_job', jobId),
   // 预览：拿到原片的 file:// 地址；放不出来时用 open_in_player 丢给外部播放器
   get_video_url: (file) => ipcRenderer.invoke('get_video_url', file),
   get_playback_caps: () => ipcRenderer.invoke('get_playback_caps'),
   open_in_player: (file) => ipcRenderer.invoke('open_in_player', file),
+  // 玻璃皮肤背景流体的性能档位 + 显卡/渲染能力自检（环境检测页用）
+  // ⚠️ 名字必须和 app.js 里 callApi("save_perf_tier") 一致 ——
+  //    叫成 set_perf_tier 过 callApi 的鸭子判断会静默返回 null（踩过）
+  save_perf_tier: (t) => ipcRenderer.invoke('set_perf_tier', t),
+  get_render_caps: () => ipcRenderer.invoke('get_render_caps'),
+  // 手动指定外部播放器路径（设置页 →「视频播放」卡）
+  set_external_player: (p) => ipcRenderer.invoke('set_external_player', p),
+  pick_external_player: () => ipcRenderer.invoke('pick_external_player'),
+  // 在线更新
+  get_update_state: () => ipcRenderer.invoke('get_update_state'),
+  check_update: () => ipcRenderer.invoke('check_update'),
+  download_update: () => ipcRenderer.invoke('download_update'),
+  install_update: () => ipcRenderer.invoke('install_update'),
+  set_update_url: (u) => ipcRenderer.invoke('set_update_url', u),
+  on_update_status: (cb) => ipcRenderer.on('update-status', (e, d) => cb(d)),
+
+  // ---- 下载完成后的「转为 30 帧」（队列行内按钮） ----
+  convert_fps30: (file) => ipcRenderer.invoke('convert_fps30', file),
+  on_fps_progress: (cb) => ipcRenderer.on('fps-progress', (e, data) => cb(data)),
+  on_fps_done: (cb) => ipcRenderer.on('fps-done', (e, data) => cb(data)),
+
+  // ---- 封面图下载页 ----
+  save_cover_dir: (dir) => ipcRenderer.invoke('save_cover_dir', dir),
+  start_cover_job: (params) => ipcRenderer.invoke('start_cover_job', params),
+  stop_cover_job: (jobId) => ipcRenderer.invoke('stop_cover_job', jobId),
+  on_cover_item: (cb) => ipcRenderer.on('cover-item', (e, data) => cb(data)),
+  on_cover_done: (cb) => ipcRenderer.on('cover-done', (e, data) => cb(data)),
+
   on_video_item: (cb) => ipcRenderer.on('video-item', (e, data) => cb(data)),
   on_video_progress: (cb) => ipcRenderer.on('video-progress', (e, data) => cb(data)),
   on_video_done: (cb) => ipcRenderer.on('video-done', (e, data) => cb(data)),
+  on_compose_item: (cb) => ipcRenderer.on('compose-item', (e, data) => cb(data)),
+  on_compose_progress: (cb) => ipcRenderer.on('compose-progress', (e, data) => cb(data)),
+  on_compose_done: (cb) => ipcRenderer.on('compose-done', (e, data) => cb(data)),
 
   /* 拖拽进窗口的文件路径。
      渲染进程拿不到 File 的真实路径（Electron 32 起移除了 File.path），

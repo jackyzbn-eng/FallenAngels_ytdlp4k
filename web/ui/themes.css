@@ -214,6 +214,203 @@ body.theme-dark-neon {
 }
 
 /* ============================================================
+   玻璃皮肤家族：dark-glass（青蓝·默认）+ 另外三套流体配色
+   ------------------------------------------------------------
+   配色数值全部原样抄自 Beyond Glass / deepseek-harness 的 wallpapers.ts：
+     fluid-deep-ocean 深海流光 → 玻璃·深海
+     fluid-aurora     极光翡翠 → 玻璃·翡翠
+     fluid-amethyst   紫晶云海 → 玻璃·紫晶
+     fluid-ember      熔金暮色 → 玻璃·熔金
+   那四套的 colors / glowColors 一个数都没改，流体画面由 fluid.js 的 WebGL 着色器按这些值渲染。
+   （它另外五套壁纸是实拍自然视频，不适合当界面底色，没抄。）
+
+   四套共用的做法（抽成一段，下面每套只覆盖有差异的变量）：
+   ① 背景是流体着色器画的（fluid.js），面板半透明，流体从面板后面透出来
+   ② 面板 = 半透明底 + backdrop-filter: blur(28px) saturate(1.8) + 0.5px 细描边
+   ③ 强调色取那套配色的 accent，只给"面"用，文字仍用单色
+
+   降级：没有 WebGL2 时 body 上没有 .has-fluid，themes.css 里的
+   --fluid-fallback 渐变会顶上（见样式表末尾），不会变成一片黑。
+   ============================================================ */
+
+/* 四套玻璃皮肤共享的骨架变量（每套再覆盖颜色部分） */
+body.theme-dark-glass,
+body.theme-glass-ocean,
+body.theme-glass-aurora,
+body.theme-glass-amethyst,
+body.theme-glass-ember {
+  --glass-blur: 28px;
+  --glass-saturate: 1.8;
+  --glass-edge: rgba(255, 255, 255, 0.11);
+  /* 内凹玻璃：比卡片更深。0.42 时长文本压在亮色流场上会发飘（实测），加到 0.52 */
+  --glass-input: rgba(8, 12, 22, 0.52);
+
+  --text-primary: #eef1f8;
+  --text-secondary: #a8b1c7;          /* 0.52 面板下 #9aa3bb 在亮色流场上偏淡，提亮一档 */
+  --text-tertiary: #6e778f;
+
+  --radius-card: 18px;                /* 玻璃要"厚"一点才像一块玻璃，圆角比 Linear 那套放大约一倍 */
+  --radius-input: 12px;
+  --radius-btn: 12px;
+
+  --bg-chip: rgba(255, 255, 255, 0.09);
+  --bg-hover: rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.2);
+
+  --success: #6ee7a8;
+  --warning: #ffc978;
+  --danger: #ff7a8a;
+
+  /* ghost 按钮：一层更薄的玻璃，四态靠不透明度递进（不改色相，免得跟强调色打架） */
+  --btn-bg: rgba(255, 255, 255, 0.07);
+  --btn-text: #b6bfd4;
+  --btn-border: rgba(255, 255, 255, 0.14);
+  --btn-hover-bg: rgba(255, 255, 255, 0.13);
+  --btn-hover-text: #ffffff;
+  --btn-hover-border: rgba(255, 255, 255, 0.28);
+  --btn-active-bg: rgba(255, 255, 255, 0.18);
+
+  /* 玻璃的立体感来自 blur + 顶边高光，不来自投影；投影只用来把弹窗从背景里拔出来 */
+  --shadow-card: inset 0 1px 0 var(--glass-edge), 0 18px 40px rgba(0, 0, 0, 0.34);
+  --glow: none;
+  --app-gradient: none;               /* 背景交给 WebGL canvas */
+}
+
+/* ---------- 玻璃·深海（fluid-deep-ocean, accent #538dca）----------
+   它的配色是"深蓝底 + 暖金高光"，所以文字用中性偏冷白、主按钮用亮玻璃片 */
+body.theme-dark-glass,
+body.theme-glass-ocean {
+  --glass-panel: rgba(20, 30, 52, 0.52);
+  --glass-panel-strong: rgba(14, 22, 40, 0.78);
+  --bg-app: #000000;                  /* 它就是纯黑底，不是深蓝 */
+  --bg-sidebar: var(--glass-panel);
+  --bg-card: var(--glass-panel);
+  --bg-input: var(--glass-input);
+
+  --text-on-accent: #06121f;
+  --accent: #538dca;
+  --accent-soft: rgba(83, 141, 202, 0.16);
+  --accent-grad: linear-gradient(120deg, #538dca 0%, #7fb3e0 50%, #eed8aa 100%);
+
+  --solid-bg: #dbe6ff;
+  --solid-text: #06121f;
+  --active-bg: rgba(255, 255, 255, 0.10);
+  --active-text: #ffffff;
+
+  --btn-selected-bg: rgba(83, 141, 202, 0.22);
+  --btn-selected-text: #cbe1f7;
+  --btn-selected-border: rgba(83, 141, 202, 0.65);
+  --shadow-btn: 0 6px 18px rgba(83, 141, 202, 0.22);
+
+  /* 没有 WebGL 时顶上的静态背景：按它的 5 个色阶铺 */
+  --fluid-fallback:
+    radial-gradient(46% 44% at 18% 26%, #204a7e 0%, transparent 70%),
+    radial-gradient(40% 40% at 84% 72%, #1a3870 0%, transparent 72%),
+    radial-gradient(30% 26% at 72% 22%, rgba(238, 216, 170, 0.22), transparent 70%),
+    #000000;
+}
+
+/* ---------- 玻璃·翡翠（fluid-aurora, accent #4be0c1）----------
+   墨绿底 + 薄荷高光。面板底色要偏青，不能沿用深海那套蓝，否则串色。 */
+body.theme-glass-aurora {
+  --glass-panel: rgba(16, 38, 38, 0.52);
+  --glass-panel-strong: rgba(10, 28, 30, 0.78);
+  --bg-app: #020807;
+  --bg-sidebar: var(--glass-panel);
+  --bg-card: var(--glass-panel);
+  --bg-input: var(--glass-input);
+
+  --text-on-accent: #04160f;
+  --accent: #4be0c1;
+  --accent-soft: rgba(75, 224, 193, 0.16);
+  --accent-grad: linear-gradient(120deg, #4be0c1 0%, #0f7168 55%, #b8ffd9 100%);
+
+  --solid-bg: #d6fff2;
+  --solid-text: #04160f;
+  --active-bg: rgba(255, 255, 255, 0.10);
+  --active-text: #ffffff;
+
+  --btn-selected-bg: rgba(75, 224, 193, 0.22);
+  --btn-selected-text: #c9ffee;
+  --btn-selected-border: rgba(75, 224, 193, 0.65);
+  --shadow-btn: 0 6px 18px rgba(75, 224, 193, 0.22);
+
+  --fluid-fallback:
+    radial-gradient(46% 44% at 20% 30%, #0f7168 0%, transparent 70%),
+    radial-gradient(42% 42% at 82% 74%, #063c42 0%, transparent 72%),
+    radial-gradient(28% 24% at 74% 20%, rgba(184, 255, 217, 0.2), transparent 70%),
+    #020807;
+}
+
+/* ---------- 玻璃·紫晶（fluid-amethyst, accent #b46fff）----------
+   深紫底 + 粉紫高光。
+   注：这套和高光的"熔金"一样，流场本身偏亮，面板不透明度给低了文字会被背景吃掉
+   （实测 0.52 时"粘贴 YouTube 链接…"那行几乎看不见）→ 面板加深到 0.62 才清晰。 */
+body.theme-glass-amethyst {
+  --glass-panel: rgba(26, 16, 50, 0.64);
+  --glass-panel-strong: rgba(18, 10, 38, 0.86);
+  --bg-app: #05020b;
+  --bg-sidebar: var(--glass-panel);
+  --bg-card: var(--glass-panel);
+  --bg-input: rgba(10, 5, 24, 0.55);      /* 输入框比卡片再深一档，保证长文本可读 */
+
+  --text-on-accent: #12051f;
+  --accent: #b46fff;
+  --accent-soft: rgba(180, 111, 255, 0.16);
+  --accent-grad: linear-gradient(120deg, #57318c 0%, #b46fff 55%, #f0b8ff 100%);
+
+  --solid-bg: #eadcff;
+  --solid-text: #12051f;
+  --active-bg: rgba(255, 255, 255, 0.10);
+  --active-text: #ffffff;
+
+  --btn-selected-bg: rgba(180, 111, 255, 0.22);
+  --btn-selected-text: #ecd8ff;
+  --btn-selected-border: rgba(180, 111, 255, 0.65);
+  --shadow-btn: 0 6px 18px rgba(180, 111, 255, 0.22);
+
+  --fluid-fallback:
+    radial-gradient(46% 44% at 22% 28%, #57318c 0%, transparent 70%),
+    radial-gradient(42% 42% at 80% 74%, #25115a 0%, transparent 72%),
+    radial-gradient(28% 24% at 70% 22%, rgba(240, 184, 255, 0.2), transparent 70%),
+    #05020b;
+}
+
+/* ---------- 玻璃·熔金（fluid-ember, accent #ff8a45）----------
+   深棕红底 + 暖金高光。四套里最"暖"的一套，跟前面三套冷色形成对照。
+   注：这套流场最亮（暖金那团几乎接近白），面板必须比另三套更厚 —— 
+   实测 0.50 时页头说明文字和输入框占位符都糊在背景里，0.66 才够。 */
+body.theme-glass-ember {
+  --glass-panel: rgba(38, 17, 10, 0.66);
+  --glass-panel-strong: rgba(26, 11, 6, 0.88);
+  --bg-app: #080201;
+  --bg-sidebar: var(--glass-panel);
+  --bg-card: var(--glass-panel);
+  --bg-input: rgba(16, 6, 3, 0.58);       /* 比卡片再深一档，长文本才压得住暖金底 */
+
+  --text-on-accent: #1b0703;
+  --accent: #ff8a45;
+  --accent-soft: rgba(255, 138, 69, 0.16);
+  --accent-grad: linear-gradient(120deg, #92361e 0%, #ff8a45 55%, #ffd08a 100%);
+
+  --solid-bg: #ffe6cf;
+  --solid-text: #1b0703;
+  --active-bg: rgba(255, 255, 255, 0.10);
+  --active-text: #ffffff;
+
+  --btn-selected-bg: rgba(255, 138, 69, 0.22);
+  --btn-selected-text: #ffdcc2;
+  --btn-selected-border: rgba(255, 138, 69, 0.65);
+  --shadow-btn: 0 6px 18px rgba(255, 138, 69, 0.22);
+
+  --fluid-fallback:
+    radial-gradient(46% 44% at 24% 30%, #92361e 0%, transparent 70%),
+    radial-gradient(42% 42% at 78% 72%, #4e130b 0%, transparent 72%),
+    radial-gradient(30% 26% at 68% 24%, rgba(255, 208, 138, 0.24), transparent 70%),
+    #080201;
+}
+
+/* ============================================================
    皮肤五：light-workbuddy —— WorkBuddy 浅色（白侧栏 + 浅灰工作区 + 薄荷绿点缀）
    取自 WorkBuddy 客户端默认外观（2026-09-17 截图取色）：
    · 侧栏纯白、主内容区极浅灰，白色大圆角卡片，几乎不用边框和阴影 —— 靠底色差分层
