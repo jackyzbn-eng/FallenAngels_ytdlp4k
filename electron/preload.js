@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld('api', {
   get_tasks: () => ipcRenderer.invoke('get_tasks'),
   stop_all: (source) => ipcRenderer.invoke('stop_all', source),
   cancel_task: (id) => ipcRenderer.invoke('cancel_task', id),
+  pause_task: (id) => ipcRenderer.invoke('pause_task', id),
+  resume_task: (id) => ipcRenderer.invoke('resume_task', id),
   retry_task: (id) => ipcRenderer.invoke('retry_task', id),
   clear_finished: (source) => ipcRenderer.invoke('clear_finished', source),
 

@@ -1,6 +1,6 @@
 {
   "name": "fallen-angels",
-  "version": "2.20.0",
+  "version": "2.22.0",
   "description": "Fallen Angels - YouTube 4K 视频下载器（Electron 版）",
   "main": "main.js",
   "scripts": {

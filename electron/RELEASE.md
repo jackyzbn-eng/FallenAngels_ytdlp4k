@@ -34,8 +34,19 @@ https://github.com/jackyzbn-eng/FallenAngels_ytdlp4k/releases/latest/download/la
 
 ## 如果国内下载太慢
 
+⚠️ 实测：`api.github.com` 国内直连通，但**附件下载走的域名（会发现跳到 objects.githubusercontent.com）直连不通**
+（502 / 连不上）。所以「检查更新」和下载都**需要开着代理**（应用读系统代理，Clash 开着就行）。
+
 设置页「软件更新 → 更新源」可以改成自己的静态地址（比如 Cloudflare R2 的公开域名）。
 只要那个地址下有 `latest.yml` + 安装包，格式和 GitHub 那份完全一样，改了立刻生效，不用重新打包。
+
+## 发版时的凭据（踩过的坑）
+
+- ⚠️ **不能用 gh CLI 的 OAuth 应用做设备码授权**：它现在走细粒度授权，设备流拿不到仓库权限，
+  拿到的 token `X-OAuth-Scopes` 是**空的**，push 会 403「Permission denied」。
+  正确做法是 **classic PAT**（https://github.com/settings/tokens/new?scopes=repo），勾 `repo` 即可。
+- ⚠️ 创建 Release 的 API 里 **`make_latest` 必须传字符串 `"true"`**，传布尔 `true` 会报
+  `For 'properties/make_latest', true is not a string`。
 
 ## 已实现的细节
 

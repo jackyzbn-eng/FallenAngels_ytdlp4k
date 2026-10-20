@@ -2798,9 +2798,11 @@ function renderTasks(src) {
   const done = tasks.filter((t) => t.state === "done").length;
   const failed = tasks.filter((t) => t.state === "error").length;
   const running = tasks.filter((t) => t.state === "running").length;
+  const pausedN = tasks.filter((t) => t.state === "paused").length;
   let summary = `共 ${total} 个 · 完成 ${done}`;
   if (failed) summary += ` · 失败 ${failed}`;
   if (running) summary += ` · 进行中 ${running}`;
+  if (pausedN) summary += ` · 已暂停 ${pausedN}`;
 
   box.innerHTML = `<div class="queue-summary">${escapeHtml(summary)}</div>`;
 
@@ -2809,10 +2811,16 @@ function renderTasks(src) {
     const pct = Math.max(0, Math.min(100, t.percent || 0));
     const pctText = t.state === "done" ? "100%"
       : (t.state === "queued" ? "—" : (pct % 1 === 0 ? pct + "%" : pct.toFixed(1) + "%"));
+    // 下载中就把「实际选中的分辨率 · 帧率」显示出来 ——
+    // 选「原画」时平台可能给 8K，机器播不动，这样开始几秒内就能取消。
+    const liveBits = [t.res, t.fps ? t.fps + "fps" : ""].filter(Boolean).join(" · ");
     // 完成态把真实分辨率显示出来 —— 选了 4K 实际拿到 1080p 时一眼就能看见
     const meta = t.state === "error" ? (t.msg || "失败")
-      : (t.state === "running" ? (t.detail || "下载中…")
-        : (t.state === "done" ? (t.res ? "完成 · " + t.res : "完成") : "等待中…"));
+      : (t.state === "running"
+        ? [liveBits, t.detail || "下载中…"].filter(Boolean).join(" · ")
+        : (t.state === "paused"
+          ? [liveBits, t.detail || "已暂停（断点已保留）"].filter(Boolean).join(" · ")
+          : (t.state === "done" ? (t.res ? "完成 · " + t.res : "完成") : "等待中…")));
 
     const item = document.createElement("div");
     item.className = "task-item state-" + t.state;
@@ -2843,7 +2851,15 @@ function renderTasks(src) {
                 : ''))
           : '') +
         (t.state === "queued" ? '<button class="btn ghost" data-act="cancel">取消</button>' : '') +
-        (t.state === "running" ? '<button class="btn ghost" data-act="cancel">停止</button>' : '') +
+        // 暂停 / 继续：暂停只停进程、保留 .part 断点，继续时 yt-dlp 用 --continue 接着下
+        (t.state === "running"
+          ? '<button class="btn ghost" data-act="pause" title="停下来，断点保留，随时可继续">暂停</button>' +
+            '<button class="btn ghost" data-act="cancel">停止</button>'
+          : '') +
+        (t.state === "paused"
+          ? '<button class="btn ghost" data-act="resume" title="从断点接着下">继续</button>' +
+            '<button class="btn ghost" data-act="cancel">取消</button>'
+          : '') +
         // 失败 / 被取消的任务给一个重试入口 —— 否则只能回输入框重新粘一遍链接
         (t.state === "error" ? '<button class="btn ghost" data-act="retry">重试</button>' : '') +
       '</div>';
@@ -2861,6 +2877,24 @@ function renderTasks(src) {
     const cancelBtn = item.querySelector('[data-act="cancel"]');
     if (cancelBtn) {
       cancelBtn.onclick = () => callApi("cancel_task", t.id);
+    }
+    const pauseBtn = item.querySelector('[data-act="pause"]');
+    if (pauseBtn) {
+      pauseBtn.onclick = async () => {
+        pauseBtn.disabled = true;
+        pauseBtn.textContent = "暂停中…";
+        const r = await callApi("pause_task", t.id);
+        if (r && !r.ok) addLogLineLocal("暂停失败：" + (r.msg || "未知错误"), "err", src);
+      };
+    }
+    const resumeBtn = item.querySelector('[data-act="resume"]');
+    if (resumeBtn) {
+      resumeBtn.onclick = async () => {
+        resumeBtn.disabled = true;
+        resumeBtn.textContent = "继续中…";
+        const r = await callApi("resume_task", t.id);
+        if (r && !r.ok) addLogLineLocal("继续失败：" + (r.msg || "未知错误"), "err", src);
+      };
     }
     const retryBtn = item.querySelector('[data-act="retry"]');
     if (retryBtn) {

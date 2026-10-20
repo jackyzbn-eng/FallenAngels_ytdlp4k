@@ -358,6 +358,7 @@ html, body {
 .task-item.state-running { border-color: var(--accent); }
 .task-item.state-done    { border-color: transparent; background: transparent; }
 .task-item.state-error   { border-color: var(--danger); }
+.task-item.state-paused  { border-color: var(--warning); }
 
 .task-main { flex: 1; min-width: 0; }
 
@@ -390,6 +391,7 @@ html, body {
 
 .task-item.state-done .task-bar-fill  { background: var(--success); }
 .task-item.state-error .task-bar-fill { background: var(--danger); }
+.task-item.state-paused .task-bar-fill { background: var(--warning); }
 
 .task-meta {
   font-size: 11px;
@@ -410,6 +412,7 @@ html, body {
 }
 
 .task-item.state-running .task-pct { color: var(--accent); }
+.task-item.state-paused .task-pct  { color: var(--warning); }
 .task-item.state-done .task-pct    { color: var(--success); }
 .task-item.state-error .task-pct   { color: var(--danger); }
 

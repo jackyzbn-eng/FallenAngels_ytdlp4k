@@ -1065,6 +1065,9 @@ const srcOf = (t) => (t && t.opts && t.opts.source) || 'yt';
 
 const procs = new Map();        // taskId -> Set<ChildProcess>，用于真停
 const cancelledTasks = new Set(); // 被用户取消的任务 id
+// 被用户「暂停」的任务 id。和取消的区别：暂停**保留** .part 断点，状态记成 paused，
+// 点「继续」时重新入队，yt-dlp 带 --continue 从断点接着下。
+const pausedTasks = new Set();
 
 function findTask(id) { return tasks.find((t) => t.id === id); }
 
@@ -1253,7 +1256,12 @@ async function runTask(t) {
 
   try {
     const r = await downloadWorker(t.url, o.folder, o.quality, o.fps, o.proxyMode, o.proxy, t.id, o.source);
-    if (cancelledTasks.has(t.id)) {
+    if (pausedTasks.has(t.id)) {
+      // 暂停：不报错、不清进度 —— .part 留在盘上，点「继续」时用 --continue 续传
+      t.state = 'paused';
+      t.detail = '已暂停（断点已保留）';
+      t.msg = '';
+    } else if (cancelledTasks.has(t.id)) {
       t.state = 'error';
       t.detail = '已取消';
       t.msg = '用户取消';
@@ -1270,7 +1278,11 @@ async function runTask(t) {
       t.msg = friendlyFailMsg(r.msg);
     }
   } catch (err) {
-    if (cancelledTasks.has(t.id)) {
+    if (pausedTasks.has(t.id)) {
+      t.state = 'paused';
+      t.detail = '已暂停（断点已保留）';
+      t.msg = '';
+    } else if (cancelledTasks.has(t.id)) {
       t.state = 'error';
       t.detail = '已取消';
       t.msg = '用户取消';
@@ -1283,6 +1295,7 @@ async function runTask(t) {
     }
   } finally {
     cancelledTasks.delete(t.id);
+    pausedTasks.delete(t.id);
   }
   pushTaskUpdate(t);
 }
@@ -1392,6 +1405,64 @@ ipcMain.handle('cancel_task', (e, id) => {
 
   return { ok: false, msg: '该任务已结束' };
 });
+
+// 暂停：和「取消」的区别是**保留断点**。
+// 做法是把 yt-dlp 停掉（.part 留在盘上，yt-dlp 不会删），状态记成 paused；
+// 点「继续」时重新入队，命令里本来就有 --continue，会从 .part 的位置接着下。
+// ⚠️ 刻意**不做进程挂起**（NtSuspendProcess 那一类）：TCP 连接会被 NAT/中间设备静默掐断，
+//    暂停几分钟后恢复反而变成死连接 —— 那种"假暂停"比停掉重连更坑。
+// 代价只有：缓冲区里还没落盘的几 MB 要重下，对 GB 级文件可以忽略。
+ipcMain.handle('pause_task', (e, id) => pauseTask(id));
+
+function pauseTask(id) {
+  const t = findTask(id);
+  if (!t) return { ok: false, msg: '任务不存在' };
+
+  if (t.state === 'queued') {
+    const pending = pendingBySource[srcOf(t)];
+    const i = pending ? pending.indexOf(id) : -1;
+    if (i >= 0) pending.splice(i, 1);
+    t.state = 'paused';
+    t.detail = '已暂停（还没开始下，点继续即开始）';
+    t.msg = '';
+    pushTaskUpdate(t);
+    pushLog(`>>> #${t.seq} 已暂停（排队中，未产生流量）`, 'warn', t.id);
+    return { ok: true };
+  }
+
+  if (t.state !== 'running') return { ok: false, msg: '当前状态不能暂停' };
+
+  pausedTasks.add(id);
+  t.detail = '正在暂停…';
+  pushTaskUpdate(t);
+  const n = killTaskProcs(id);
+  pushLog(`>>> #${t.seq} 正在暂停（已停 ${n} 个进程，断点保留）`, 'dim', t.id);
+  return { ok: true };
+}
+
+// 继续：paused → queued，重新走 runTask。
+// 注意**不清 percent** —— 进度条要停在暂停那一刻，用户才知道还得下多少。
+ipcMain.handle('resume_task', (e, id) => resumeTask(id));
+
+function resumeTask(id) {
+  const t = findTask(id);
+  if (!t) return { ok: false, msg: '任务不存在' };
+  if (t.state !== 'paused') return { ok: false, msg: '只有暂停的任务能继续' };
+  const src = srcOf(t);
+  if (!pendingBySource[src]) return { ok: false, msg: '未知来源：' + src };
+
+  pausedTasks.delete(id);
+  cancelledTasks.delete(id);
+  t.state = 'queued';
+  t.detail = `继续中（从 ${Math.round(t.percent || 0)}% 断点续传）`;
+  t.msg = '';
+  pendingBySource[src].push(id);
+  stoppedBySource[src] = false;
+  pushTaskUpdate(t);
+  pushLog(`>>> #${t.seq} 继续下载（断点续传）`, 'dim', t.id);
+  pumpQueue(src);
+  return { ok: true };
+}
 
 // 重试：把失败 / 已取消的任务重置回队列，用原来的参数再跑一遍。
 // 刻意不新建任务 —— 否则同一个链接在列表里会堆出好几行，越试越乱。
@@ -1534,9 +1605,31 @@ function runYtdlp({ ytdlp, args, cwdEnv, withCookies, cappedClient, label, url, 
       for (const raw of parts) {
         const line = raw.trim();
         if (!line) continue;
+        // 下载开始时 yt-dlp 会打印 --print 那行：实际选中的分辨率 / 帧率 / 格式号
+        const mMeta = line.match(/^META=([^|]*)\|([^|]*)\|(.*)$/);
+        if (mMeta) {
+          const tt = findTask(taskId);
+          const resTxt = (mMeta[1] || '').trim();
+          const fpsNum = parseFloat(mMeta[2]) || 0;
+          if (tt && resTxt && resTxt !== 'NA') {
+            // 和 reportResolution 保持同一种写法（3840×2160），完成后核对时会覆盖成更准的
+            tt.res = resTxt.replace(/x/i, '×');
+            if (fpsNum) tt.fps = fpsNum;
+            pushTaskUpdate(tt);
+            pushLog(
+              `>>> 实际选中：${tt.res}${fpsNum ? ' · ' + fpsNum + 'fps' : ''}（格式 ${(mMeta[3] || '').trim()}）`,
+              'dim', taskId
+            );
+          }
+          continue;
+        }
         const prog = parseProgress(line);
         if (prog) {
           // 进度行只喂进度条，不写日志（否则刷屏）
+          // 同时记到任务对象上 —— 否则「暂停」时 pushTaskUpdate 会把 0% 推给界面，
+          // 进度条直接归零，看起来像失败（实测踩过）。
+          const tt = findTask(taskId);
+          if (tt) { tt.percent = prog.percent; tt.detail = prog.detail; }
           sendProgress({ taskId, state: 'progress', percent: prog.percent, detail: prog.detail });
           continue;
         }
@@ -1630,6 +1723,9 @@ async function downloadDirectWorker(url, folder, pMode, proxy, taskId) {
       const prog = parseAriaProgress(line);
       if (prog) {
         // 进度读数只喂进度条，不写日志（每秒一行会刷屏）
+        // 同样记到任务对象上，暂停/重试时才不会把进度清零
+        const tt = findTask(taskId);
+        if (tt) { tt.percent = prog.percent; tt.detail = prog.detail; }
         sendProgress({ taskId, state: 'progress', percent: prog.percent, detail: prog.detail });
         return;
       }
@@ -1742,6 +1838,12 @@ async function downloadWorker(url, folder, quality, fps, pMode, proxy, taskId, s
 
   const template = path.join(folder, '%(title)s.%(ext)s');
   const args = ['-o', template, '-f', fmtArg, '--merge-output-format', 'mkv', '--no-update', '--newline'];
+
+  // 下载一开始就把「实际选中的格式」吐成一行，好在界面上显示分辨率/帧率。
+  // 起因：选「原画」时平台可能给 8K，机器播不动 —— 有了这行，开始下载几秒内就能看到并取消。
+  // ⚠️ --print 会把进度输出默认静音，必须同时给 --no-simulate --progress，否则进度条不动。
+  args.push('--print', 'before_dl:META=%(resolution)s|%(fps)s|%(format_id)s');
+  args.push('--no-simulate', '--progress');
 
   const ffmpeg = findTool('ffmpeg');
   if (ffmpeg) args.push('--ffmpeg-location', path.dirname(ffmpeg));
